@@ -14,8 +14,10 @@ from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from config import Settings
 from database import Database
@@ -280,6 +282,22 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+# ── Health ────────────────────────────────────────────────────────────────
+
+# ── Dashboard ─────────────────────────────────────────────────────────────
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    """Serve the Tax Collector web dashboard."""
+    html_path = STATIC_DIR / "index.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text(), status_code=200)
+    return HTMLResponse(content="<h1>Dashboard not found</h1><p>static/index.html missing</p>", status_code=404)
 
 
 # ── Health ────────────────────────────────────────────────────────────────
