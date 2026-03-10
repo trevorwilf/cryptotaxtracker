@@ -13,7 +13,7 @@ class Settings:
             "postgresql+asyncpg://hbot:password@127.0.0.1:5432/hummingbot_api",
         )
         self.sync_cron = os.environ.get("TAX_SYNC_CRON", "0 3 * * *")
-        self.export_dir = os.environ.get("TAX_EXPORT_DIR", "/app/exports")
+        self.export_dir = os.environ.get("TAX_EXPORT_DIR", "/data/exports")
 
         # Enabled exchanges (comma-separated)
         exchanges_str = os.environ.get("TAX_EXCHANGES", "nonkyc,mexc")

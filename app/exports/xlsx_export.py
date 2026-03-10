@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("tax-collector.export")
 
-EXPORT_DIR = os.environ.get("TAX_EXPORT_DIR", "/app/exports")
+EXPORT_DIR = os.environ.get("TAX_EXPORT_DIR", "/data/exports")
 
 HEADER_FONT = Font(name="Arial", bold=True, size=11, color="FFFFFF")
 HEADER_FILL = PatternFill("solid", fgColor="2F5496")
