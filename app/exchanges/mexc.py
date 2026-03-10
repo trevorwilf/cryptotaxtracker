@@ -2,7 +2,13 @@
 MEXC exchange plugin.
 
 REST API: https://api.mexc.com/api/v3/
-Auth: HMAC-SHA256 query string signature (Binance-style).
+Auth: HMAC-SHA256 query string signature.
+
+MEXC signature rules:
+  1. Build query string from params IN ORDER (not sorted)
+  2. Append timestamp and recvWindow
+  3. HMAC-SHA256 the full query string with the secret key
+  4. Append signature= to the URL
 """
 import hashlib
 import hmac
@@ -24,24 +30,40 @@ BASE_URL = "https://api.mexc.com"
 class MEXCExchange(BaseExchange):
     name = "mexc"
 
-    def _sign(self, params: dict) -> dict:
+    def _sign(self, params: dict) -> str:
+        """Build a signed query string. Returns the full query string including signature."""
         params["timestamp"] = str(int(time.time() * 1000))
         params["recvWindow"] = "10000"
-        query = urlencode(sorted(params.items()))
+        # CRITICAL: urlencode in insertion order — do NOT sort
+        query = urlencode(params)
         signature = hmac.new(
-            self.api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-        params["signature"] = signature
-        return params
+            self.api_secret.encode(), query.encode(), hashlib.sha256
+        ).hexdigest()
+        return query + "&signature=" + signature
 
     async def _get(self, path: str, params: dict | None = None, signed: bool = True) -> list | dict:
         params = params or {}
         headers = {"X-MEXC-APIKEY": self.api_key}
         if signed:
-            params = self._sign(params)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{BASE_URL}{path}", params=params, headers=headers) as resp:
-                resp.raise_for_status()
-                return await resp.json()
+            # Build the full signed URL ourselves so param order is guaranteed
+            query_string = self._sign(params)
+            url = f"{BASE_URL}{path}?{query_string}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning(f"MEXC {path} returned {resp.status}: {body}")
+                        resp.raise_for_status()
+                    return await resp.json()
+        else:
+            url = f"{BASE_URL}{path}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning(f"MEXC {path} returned {resp.status}: {body}")
+                        resp.raise_for_status()
+                    return await resp.json()
 
     def _parse_ts(self, val) -> datetime:
         if val is None:
@@ -51,15 +73,8 @@ class MEXCExchange(BaseExchange):
         return datetime.now(timezone.utc)
 
     async def _get_traded_symbols(self) -> list[str]:
+        """Discover symbols by checking account balances for non-zero assets."""
         symbols = set()
-        try:
-            open_orders = await self._get("/api/v3/openOrders", {})
-            if isinstance(open_orders, list):
-                for o in open_orders:
-                    if o.get("symbol"):
-                        symbols.add(o["symbol"])
-        except Exception:
-            pass
         try:
             account = await self._get("/api/v3/account", {})
             if isinstance(account, dict):
@@ -68,16 +83,20 @@ class MEXCExchange(BaseExchange):
                     locked = float(bal.get("locked", 0))
                     if (free + locked) > 0:
                         asset = bal.get("asset", "")
-                        if asset and asset != "USDT":
+                        if asset and asset not in ("USDT", "USDC", "USD"):
                             symbols.add(f"{asset}USDT")
-        except Exception:
-            pass
+                logger.info(f"MEXC account has {len(symbols)} non-zero assets")
+        except Exception as e:
+            logger.warning(f"MEXC account lookup failed: {e}")
+
         if not symbols:
-            symbols = {"BTCUSDT", "ETHUSDT"}
+            logger.warning("No traded symbols found on MEXC — skipping trade fetch")
         return list(symbols)
 
     async def fetch_trades(self, since: datetime | None = None) -> list[dict]:
         symbols = await self._get_traded_symbols()
+        if not symbols:
+            return []
         all_trades = []
         for symbol in symbols:
             params = {"symbol": symbol, "limit": 1000}
@@ -110,9 +129,11 @@ class MEXCExchange(BaseExchange):
 
     async def fetch_orders(self, since: datetime | None = None) -> list[dict]:
         symbols = await self._get_traded_symbols()
-        all_orders = []
+        if not symbols:
+            return []
         status_map = {"NEW": "Active", "PARTIALLY_FILLED": "Partly Filled",
                       "FILLED": "Filled", "CANCELED": "Cancelled", "CANCELLED": "Cancelled"}
+        all_orders = []
         for symbol in symbols:
             params = {"symbol": symbol, "limit": 1000}
             if since:
