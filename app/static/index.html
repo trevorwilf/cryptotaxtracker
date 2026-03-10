@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tax Collector — Trading Pod</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg-primary: #0a0e17;
+    --bg-card: #111827;
+    --bg-card-hover: #1a2332;
+    --bg-input: #0d1321;
+    --border: #1e2a3a;
+    --border-bright: #2d3f56;
+    --text-primary: #e2e8f0;
+    --text-secondary: #8899aa;
+    --text-dim: #556677;
+    --green: #22c55e;
+    --green-dim: #16a34a;
+    --green-bg: rgba(34, 197, 94, 0.08);
+    --red: #ef4444;
+    --red-dim: #dc2626;
+    --red-bg: rgba(239, 68, 68, 0.08);
+    --blue: #3b82f6;
+    --blue-dim: #2563eb;
+    --blue-bg: rgba(59, 130, 246, 0.08);
+    --amber: #f59e0b;
+    --amber-bg: rgba(245, 158, 11, 0.08);
+    --cyan: #06b6d4;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Ambient background ─────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background:
+      radial-gradient(ellipse at 20% 20%, rgba(34, 197, 94, 0.03) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 80%, rgba(59, 130, 246, 0.03) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Header ─────────────────────────────────────────── */
+  .header {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 23, 0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 2rem;
+  }
+  .header-inner {
+    max-width: 1400px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 64px;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--green), var(--cyan));
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700; color: #000;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .logo-text {
+    font-size: 18px; font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .logo-text span { color: var(--text-dim); font-weight: 400; }
+  .header-status {
+    display: flex; align-items: center; gap: 16px;
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-dim);
+    animation: pulse 2s infinite;
+  }
+  .status-dot.online { background: var(--green); }
+  .status-dot.syncing { background: var(--amber); animation: pulse 0.8s infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .status-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--text-secondary);
+  }
+
+  /* ── Navigation ─────────────────────────────────────── */
+  .nav {
+    display: flex; gap: 2px;
+    background: var(--bg-card);
+    border-radius: 10px;
+    padding: 3px;
+  }
+  .nav-btn {
+    background: none; border: none; color: var(--text-secondary);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px; font-weight: 500;
+    padding: 8px 18px; border-radius: 8px;
+    cursor: pointer; transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .nav-btn:hover { color: var(--text-primary); background: var(--bg-card-hover); }
+  .nav-btn.active {
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+
+  /* ── Main layout ────────────────────────────────────── */
+  .main {
+    position: relative; z-index: 1;
+    max-width: 1400px; margin: 0 auto;
+    padding: 2rem;
+  }
+  .page { display: none; }
+  .page.active { display: block; animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── Cards ──────────────────────────────────────────── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--border-bright); }
+  .card-title {
+    font-size: 13px; font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card-title .icon { font-size: 16px; }
+
+  /* ── Stat grid ──────────────────────────────────────── */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+  }
+  .stat-label {
+    font-size: 12px; color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .stat-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 24px; font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .stat-value.usd { color: var(--green); }
+  .stat-value.usd::before { content: '$'; font-size: 16px; opacity: 0.6; }
+  .stat-sub {
+    font-size: 12px; color: var(--text-dim);
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* ── Tables ─────────────────────────────────────────── */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 12px 16px;
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(30,42,58,0.5);
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .cell-usd { color: var(--green); }
+  .cell-buy { color: var(--green); }
+  .cell-sell { color: var(--red); }
+  .cell-dim { color: var(--text-dim); }
+  .cell-warn { color: var(--amber); }
+
+  /* ── Buttons ────────────────────────────────────────── */
+  .btn {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px; font-weight: 600;
+    padding: 10px 20px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn-primary {
+    background: var(--green); color: #000; border-color: var(--green);
+  }
+  .btn-primary:hover { background: var(--green-dim); border-color: var(--green-dim); }
+  .btn-secondary {
+    background: var(--bg-card); color: var(--text-primary);
+  }
+  .btn-secondary:hover { background: var(--bg-card-hover); border-color: var(--border-bright); }
+  .btn-danger {
+    background: var(--red-bg); color: var(--red); border-color: rgba(239,68,68,0.3);
+  }
+  .btn-danger:hover { background: rgba(239,68,68,0.15); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+
+  /* ── Select / Input ─────────────────────────────────── */
+  select, input[type="number"] {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  select:focus, input:focus { border-color: var(--blue); }
+  label {
+    font-size: 12px; color: var(--text-secondary);
+    display: block; margin-bottom: 4px;
+  }
+  .input-group { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+
+  /* ── Log/Console ────────────────────────────────────── */
+  .console {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.8;
+    color: var(--text-secondary);
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .console .log-ok { color: var(--green); }
+  .console .log-err { color: var(--red); }
+  .console .log-warn { color: var(--amber); }
+  .console .log-info { color: var(--blue); }
+  .console .log-ts { color: var(--text-dim); }
+
+  /* ── Badge ──────────────────────────────────────────── */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .badge-green { background: var(--green-bg); color: var(--green); }
+  .badge-red { background: var(--red-bg); color: var(--red); }
+  .badge-blue { background: var(--blue-bg); color: var(--blue); }
+  .badge-amber { background: var(--amber-bg); color: var(--amber); }
+
+  /* ── Exchange chips ─────────────────────────────────── */
+  .exchange-row {
+    display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;
+  }
+  .exchange-chip {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 16px;
+    font-size: 14px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .exchange-chip .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+
+  /* ── Responsive ─────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .header-inner { flex-wrap: wrap; height: auto; padding: 12px 0; gap: 12px; }
+    .main { padding: 1rem; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    .stat-value { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══════════════════════════════════════════ -->
+<div class="header">
+  <div class="header-inner">
+    <div class="logo">
+      <div class="logo-icon">TC</div>
+      <div class="logo-text">Tax Collector <span>v2</span></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-btn active" onclick="showPage('overview')">Overview</button>
+      <button class="nav-btn" onclick="showPage('sync')">Sync</button>
+      <button class="nav-btn" onclick="showPage('trades')">Trades</button>
+      <button class="nav-btn" onclick="showPage('export')">Export</button>
+      <button class="nav-btn" onclick="showPage('prices')">Price Cache</button>
+    </nav>
+    <div class="header-status">
+      <div class="status-dot" id="healthDot"></div>
+      <span class="status-label" id="healthLabel">checking...</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MAIN ═════════════════════════════════════════════ -->
+<div class="main">
+
+<!-- ── OVERVIEW PAGE ────────────────────────────────────── -->
+<div class="page active" id="page-overview">
+  <div class="stat-grid" id="overviewStats">
+    <div class="stat-card"><div class="stat-label">Loading...</div><div class="stat-value">—</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">📊</span> Exchange Summary</div>
+    <div class="table-wrap">
+      <table><thead><tr>
+        <th>Exchange</th><th>Trades</th><th>Volume (USD)</th><th>Fees (USD)</th>
+        <th>Deposits</th><th>Dep. (USD)</th><th>Withdrawals</th><th>Wd. (USD)</th>
+      </tr></thead><tbody id="summaryTable"><tr><td colspan="8" class="cell-dim">Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+  <div id="missingWarning" style="display:none;" class="card" style="border-color: rgba(245,158,11,0.3);">
+    <div class="card-title" style="color: var(--amber);"><span class="icon">⚠️</span> Missing USD Values</div>
+    <p id="missingText" style="font-size:14px; color: var(--text-secondary); margin-bottom: 12px;"></p>
+    <button class="btn btn-secondary" onclick="runBackfill()">Run USD Backfill</button>
+  </div>
+</div>
+
+<!-- ── SYNC PAGE ───────────────────────────────────────── -->
+<div class="page" id="page-sync">
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="syncAll(false)">⟳ Incremental Sync All</button>
+    <button class="btn btn-danger" onclick="syncAll(true)">⟳ Full Re-sync All</button>
+    <div style="flex:1;"></div>
+    <button class="btn btn-secondary" onclick="refreshSyncStatus()">Refresh Status</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">🔄</span> Sync Status</div>
+    <div class="table-wrap">
+      <table><thead><tr>
+        <th>Exchange</th><th>Status</th><th>Trades</th><th>Orders</th>
+        <th>Deposits</th><th>Withdrawals</th><th>Pools</th><th>Finished</th>
+      </tr></thead><tbody id="syncTable"><tr><td colspan="8" class="cell-dim">No syncs yet</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">💲</span> USD Backfill</div>
+    <div class="input-group" style="margin-bottom: 1rem;">
+      <div>
+        <label>Batch Size</label>
+        <input type="number" id="backfillBatch" value="50" min="1" max="500" style="width:100px;">
+      </div>
+      <button class="btn btn-secondary" onclick="runBackfill()">Run Backfill</button>
+      <button class="btn btn-secondary" onclick="refreshBackfillStatus()">Check Status</button>
+    </div>
+    <div class="console" id="backfillConsole">Idle — no backfill has been run this session.</div>
+  </div>
+</div>
+
+<!-- ── TRADES PAGE ─────────────────────────────────────── -->
+<div class="page" id="page-trades">
+  <div class="input-group" style="margin-bottom: 1.5rem;">
+    <div>
+      <label>Exchange</label>
+      <select id="tradeExchange"><option value="nonkyc">NONKYC</option><option value="mexc">MEXC</option></select>
+    </div>
+    <div>
+      <label>Year</label>
+      <input type="number" id="tradeYear" placeholder="All" min="2020" max="2030" style="width:100px;">
+    </div>
+    <div>
+      <label>Limit</label>
+      <input type="number" id="tradeLimit" value="50" min="1" max="500" style="width:80px;">
+    </div>
+    <button class="btn btn-primary" onclick="loadTrades()">Load Trades</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">📈</span> Trade History <span id="tradeCount" class="badge badge-blue" style="margin-left:8px;"></span></div>
+    <div class="table-wrap">
+      <table><thead><tr>
+        <th>Date</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th>Total</th>
+        <th>Fee</th><th>Total (USD)</th><th>Fee (USD)</th><th>Base Rate</th>
+      </tr></thead><tbody id="tradesTable"><tr><td colspan="10" class="cell-dim">Select an exchange and click Load Trades</td></tr></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- ── EXPORT PAGE ─────────────────────────────────────── -->
+<div class="page" id="page-export">
+  <div class="card">
+    <div class="card-title"><span class="icon">📁</span> Download Tax Report (XLSX)</div>
+    <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 1.5rem; line-height: 1.7;">
+      Generates an Excel workbook with a <strong style="color:var(--text-primary);">Summary</strong> tab
+      plus one tab per exchange. Each tab contains Trades, Orders, Deposits, Withdrawals, and Pool Activity
+      with full USD valuations alongside the original crypto amounts.
+      <br>USD columns are <span style="color: var(--green);">green-formatted</span>.
+      Missing values appear as <span style="color: var(--red); font-style:italic;">red italic</span>.
+    </p>
+    <div class="input-group">
+      <div>
+        <label>Tax Year</label>
+        <input type="number" id="exportYear" placeholder="All years" min="2020" max="2030" style="width:120px;">
+      </div>
+      <a id="exportLink" class="btn btn-primary" style="text-decoration:none;" onclick="downloadReport(event)">
+        ⬇ Download XLSX
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ── PRICES PAGE ─────────────────────────────────────── -->
+<div class="page" id="page-prices">
+  <div class="stat-grid" id="priceStats">
+    <div class="stat-card"><div class="stat-label">Loading...</div><div class="stat-value">—</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">💰</span> Cached Assets (Top 20)</div>
+    <div class="table-wrap">
+      <table><thead><tr>
+        <th>Asset</th><th>Cached Days</th><th>Earliest</th><th>Latest</th>
+      </tr></thead><tbody id="priceTable"><tr><td colspan="4" class="cell-dim">Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+  <div style="margin-top:1rem;">
+    <button class="btn btn-secondary" onclick="loadPriceStats()">⟳ Refresh</button>
+  </div>
+</div>
+
+</div><!-- /main -->
+
+<script>
+const API = '';  // Same origin
+
+// ── Navigation ───────────────────────────────────────────
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  event.target.classList.add('active');
+
+  if (id === 'overview') loadOverview();
+  if (id === 'sync') refreshSyncStatus();
+  if (id === 'prices') loadPriceStats();
+}
+
+// ── Helpers ──────────────────────────────────────────────
+function fmtUsd(val) {
+  if (!val || val === 'None' || val === 'null') return '—';
+  const n = parseFloat(val);
+  if (isNaN(n)) return '—';
+  if (n >= 1000) return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  if (n >= 1) return '$' + n.toFixed(2);
+  return '$' + n.toFixed(6);
+}
+function fmtCrypto(val) {
+  if (!val || val === '0') return '0';
+  const n = parseFloat(val);
+  if (isNaN(n)) return val;
+  if (n >= 1000) return n.toLocaleString('en-US', {maximumFractionDigits: 4});
+  if (n >= 1) return n.toFixed(4);
+  return n.toFixed(8);
+}
+function fmtDate(val) {
+  if (!val) return '—';
+  const d = new Date(val);
+  return d.toISOString().replace('T', ' ').substring(0, 19);
+}
+function badge(status) {
+  const map = {success:'badge-green', running:'badge-amber', error:'badge-red', idle:'badge-blue'};
+  return `<span class="badge ${map[status]||'badge-blue'}">${status}</span>`;
+}
+
+async function api(path, method='GET') {
+  try {
+    const r = await fetch(API + path, {method});
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return await r.json();
+  } catch(e) {
+    console.error('API error:', path, e);
+    return null;
+  }
+}
+
+// ── Health check ─────────────────────────────────────────
+async function checkHealth() {
+  const dot = document.getElementById('healthDot');
+  const label = document.getElementById('healthLabel');
+  const data = await api('/health');
+  if (data && data.status === 'ok') {
+    dot.className = 'status-dot online';
+    label.textContent = 'online — ' + data.exchanges.join(', ');
+  } else {
+    dot.className = 'status-dot';
+    label.textContent = 'offline';
+  }
+}
+
+// ── Overview page ────────────────────────────────────────
+async function loadOverview() {
+  const data = await api('/summary');
+  if (!data) return;
+
+  let totalTrades = 0, totalVol = 0, totalFees = 0, totalDeps = 0, totalWds = 0;
+  const exchanges = Object.keys(data.trades || {});
+
+  exchanges.forEach(ex => {
+    const t = data.trades[ex] || {};
+    totalTrades += t.count || 0;
+    totalVol += parseFloat(t.volume_usd || 0);
+    totalFees += parseFloat(t.fees_usd || 0);
+  });
+  Object.values(data.deposits || {}).forEach(d => {
+    totalDeps += parseFloat(d.total_usd || 0);
+  });
+  Object.values(data.withdrawals || {}).forEach(w => {
+    totalWds += parseFloat(w.total_usd || 0);
+  });
+
+  const miss = data.missing_usd || {};
+  const totalMissing = (miss.trades||0) + (miss.deposits||0) + (miss.withdrawals||0);
+
+  document.getElementById('overviewStats').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Total Trades</div>
+      <div class="stat-value">${totalTrades.toLocaleString()}</div>
+      <div class="stat-sub">${exchanges.length} exchange${exchanges.length!==1?'s':''}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Trade Volume</div>
+      <div class="stat-value usd">${totalVol.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Fees</div>
+      <div class="stat-value usd">${totalFees.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Deposits (USD)</div>
+      <div class="stat-value usd">${totalDeps.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Withdrawals (USD)</div>
+      <div class="stat-value usd">${totalWds.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Missing USD</div>
+      <div class="stat-value" style="color: ${totalMissing>0?'var(--amber)':'var(--green)'}">${totalMissing}</div>
+      <div class="stat-sub">${totalMissing===0?'all resolved':'needs backfill'}</div>
+    </div>
+  `;
+
+  // Summary table
+  let rows = '';
+  exchanges.forEach(ex => {
+    const t = data.trades[ex] || {};
+    const d = data.deposits?.[ex] || {};
+    const w = data.withdrawals?.[ex] || {};
+    rows += `<tr>
+      <td style="text-transform:uppercase; font-weight:600;">${ex}</td>
+      <td>${(t.count||0).toLocaleString()}</td>
+      <td class="cell-usd">${fmtUsd(t.volume_usd)}</td>
+      <td class="cell-usd">${fmtUsd(t.fees_usd)}</td>
+      <td>${(d.count||0).toLocaleString()}</td>
+      <td class="cell-usd">${fmtUsd(d.total_usd)}</td>
+      <td>${(w.count||0).toLocaleString()}</td>
+      <td class="cell-usd">${fmtUsd(w.total_usd)}</td>
+    </tr>`;
+  });
+  if (!rows) rows = '<tr><td colspan="8" class="cell-dim">No data yet — run a sync first</td></tr>';
+  document.getElementById('summaryTable').innerHTML = rows;
+
+  // Missing warning
+  const warnEl = document.getElementById('missingWarning');
+  if (totalMissing > 0) {
+    warnEl.style.display = 'block';
+    document.getElementById('missingText').textContent =
+      `${miss.trades||0} trades, ${miss.deposits||0} deposits, and ${miss.withdrawals||0} withdrawals are missing USD values. Run a backfill to resolve them using CoinGecko historical prices.`;
+  } else {
+    warnEl.style.display = 'none';
+  }
+}
+
+// ── Sync page ────────────────────────────────────────────
+async function syncAll(full) {
+  const label = full ? 'full re-sync' : 'incremental sync';
+  if (full && !confirm('Full re-sync will re-pull ALL history from every exchange. Continue?')) return;
+  const data = await api('/sync?full=' + full, 'POST');
+  if (data) {
+    logToConsole('backfillConsole', `Started ${label} for all exchanges`, 'info');
+    document.getElementById('healthDot').className = 'status-dot syncing';
+    setTimeout(refreshSyncStatus, 3000);
+  }
+}
+
+async function refreshSyncStatus() {
+  const data = await api('/sync/status');
+  if (!data) return;
+
+  const exchanges = Object.keys(data);
+  if (exchanges.length === 0) {
+    document.getElementById('syncTable').innerHTML = '<tr><td colspan="8" class="cell-dim">No syncs yet</td></tr>';
+    return;
+  }
+
+  let rows = '';
+  let anySyncing = false;
+  exchanges.forEach(ex => {
+    const s = data[ex];
+    if (s.status === 'running') anySyncing = true;
+    rows += `<tr>
+      <td style="text-transform:uppercase; font-weight:600;">${ex}</td>
+      <td>${badge(s.status)}</td>
+      <td>${s.trades ?? '—'}</td>
+      <td>${s.orders ?? '—'}</td>
+      <td>${s.deposits ?? '—'}</td>
+      <td>${s.withdrawals ?? '—'}</td>
+      <td>${s.pools ?? '—'}</td>
+      <td class="cell-dim">${s.finished ? fmtDate(s.finished) : (s.started ? 'running...' : '—')}</td>
+    </tr>`;
+  });
+  document.getElementById('syncTable').innerHTML = rows;
+
+  const dot = document.getElementById('healthDot');
+  if (anySyncing) {
+    dot.className = 'status-dot syncing';
+    setTimeout(refreshSyncStatus, 5000);
+  } else {
+    dot.className = 'status-dot online';
+  }
+}
+
+// ── Backfill ─────────────────────────────────────────────
+async function runBackfill() {
+  const batch = document.getElementById('backfillBatch')?.value || 50;
+  const data = await api('/backfill-usd?batch_size=' + batch, 'POST');
+  if (data) {
+    logToConsole('backfillConsole', 'Backfill started (batch=' + batch + ')...', 'info');
+    setTimeout(refreshBackfillStatus, 5000);
+  }
+}
+
+async function refreshBackfillStatus() {
+  const data = await api('/backfill-usd/status');
+  if (!data) return;
+  const el = document.getElementById('backfillConsole');
+  if (data.status === 'running') {
+    logToConsole('backfillConsole', 'Backfill running...', 'warn');
+    setTimeout(refreshBackfillStatus, 5000);
+  } else if (data.status === 'success') {
+    const f = data.filled || {};
+    logToConsole('backfillConsole',
+      `Backfill complete: ${f.trades||0} trades, ${f.deposits||0} deposits, ${f.withdrawals||0} withdrawals resolved`, 'ok');
+  } else if (data.status === 'error') {
+    logToConsole('backfillConsole', 'Backfill error: ' + (data.error || 'unknown'), 'err');
+  }
+}
+
+function logToConsole(id, msg, type) {
+  const el = document.getElementById(id);
+  const ts = new Date().toISOString().substring(11, 19);
+  const cls = type === 'ok' ? 'log-ok' : type === 'err' ? 'log-err' : type === 'warn' ? 'log-warn' : 'log-info';
+  el.innerHTML += `<div><span class="log-ts">[${ts}]</span> <span class="${cls}">${msg}</span></div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Trades page ──────────────────────────────────────────
+async function loadTrades() {
+  const ex = document.getElementById('tradeExchange').value;
+  const year = document.getElementById('tradeYear').value;
+  const limit = document.getElementById('tradeLimit').value || 50;
+  let url = `/trades/${ex}?limit=${limit}`;
+  if (year) url += `&year=${year}`;
+  const data = await api(url);
+  if (!data) return;
+
+  document.getElementById('tradeCount').textContent = data.count + ' loaded';
+  const trades = data.trades || [];
+  if (trades.length === 0) {
+    document.getElementById('tradesTable').innerHTML = '<tr><td colspan="10" class="cell-dim">No trades found</td></tr>';
+    return;
+  }
+
+  let rows = '';
+  trades.forEach(t => {
+    const sideClass = t.side === 'buy' ? 'cell-buy' : 'cell-sell';
+    rows += `<tr>
+      <td class="cell-dim">${fmtDate(t.executed_at)}</td>
+      <td style="font-weight:600;">${t.market}</td>
+      <td class="${sideClass}" style="text-transform:uppercase;font-weight:600;">${t.side}</td>
+      <td>${fmtCrypto(t.price)}</td>
+      <td>${fmtCrypto(t.quantity)}</td>
+      <td>${fmtCrypto(t.total)}</td>
+      <td>${fmtCrypto(t.fee)}</td>
+      <td class="cell-usd">${fmtUsd(t.total_usd)}</td>
+      <td class="cell-usd">${fmtUsd(t.fee_usd)}</td>
+      <td class="cell-dim">${fmtUsd(t.base_price_usd)}</td>
+    </tr>`;
+  });
+  document.getElementById('tradesTable').innerHTML = rows;
+}
+
+// ── Export page ──────────────────────────────────────────
+function downloadReport(e) {
+  const year = document.getElementById('exportYear').value;
+  let url = API + '/export/xlsx';
+  if (year) url += '?year=' + year;
+  window.open(url, '_blank');
+}
+
+// ── Prices page ──────────────────────────────────────────
+async function loadPriceStats() {
+  const data = await api('/prices/stats');
+  if (!data) return;
+
+  document.getElementById('priceStats').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Cached Prices</div>
+      <div class="stat-value">${(data.total_cached_prices||0).toLocaleString()}</div>
+      <div class="stat-sub">asset-day pairs</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Unique Assets</div>
+      <div class="stat-value">${data.unique_assets||0}</div>
+    </div>
+  `;
+
+  const assets = data.top_assets || [];
+  if (assets.length === 0) {
+    document.getElementById('priceTable').innerHTML = '<tr><td colspan="4" class="cell-dim">No prices cached yet</td></tr>';
+    return;
+  }
+  let rows = '';
+  assets.forEach(a => {
+    rows += `<tr>
+      <td style="font-weight:600;">${a.asset}</td>
+      <td>${a.cached_days}</td>
+      <td class="cell-dim">${a.earliest}</td>
+      <td class="cell-dim">${a.latest}</td>
+    </tr>`;
+  });
+  document.getElementById('priceTable').innerHTML = rows;
+}
+
+// ── Init ─────────────────────────────────────────────────
+checkHealth();
+loadOverview();
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
