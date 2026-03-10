@@ -6,792 +6,469 @@
 <title>Tax Collector — Trading Pod</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
-
   :root {
-    --bg-primary: #0a0e17;
-    --bg-card: #111827;
-    --bg-card-hover: #1a2332;
-    --bg-input: #0d1321;
-    --border: #1e2a3a;
-    --border-bright: #2d3f56;
-    --text-primary: #e2e8f0;
-    --text-secondary: #8899aa;
-    --text-dim: #556677;
-    --green: #22c55e;
-    --green-dim: #16a34a;
-    --green-bg: rgba(34, 197, 94, 0.08);
-    --red: #ef4444;
-    --red-dim: #dc2626;
-    --red-bg: rgba(239, 68, 68, 0.08);
-    --blue: #3b82f6;
-    --blue-dim: #2563eb;
-    --blue-bg: rgba(59, 130, 246, 0.08);
-    --amber: #f59e0b;
-    --amber-bg: rgba(245, 158, 11, 0.08);
-    --cyan: #06b6d4;
+    --bg-primary: #0a0e17; --bg-card: #111827; --bg-card-hover: #1a2332;
+    --bg-input: #0d1321; --border: #1e2a3a; --border-bright: #2d3f56;
+    --text-primary: #e2e8f0; --text-secondary: #8899aa; --text-dim: #556677;
+    --green: #22c55e; --green-dim: #16a34a; --green-bg: rgba(34,197,94,0.08);
+    --red: #ef4444; --red-bg: rgba(239,68,68,0.08);
+    --blue: #3b82f6; --blue-bg: rgba(59,130,246,0.08);
+    --amber: #f59e0b; --amber-bg: rgba(245,158,11,0.08);
+    --cyan: #06b6d4; --purple: #a855f7; --purple-bg: rgba(168,85,247,0.08);
   }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg-primary); color:var(--text-primary); min-height:100vh; }
+  body::before { content:''; position:fixed; top:-50%; left:-50%; width:200%; height:200%;
+    background: radial-gradient(ellipse at 20% 20%, rgba(34,197,94,0.03) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(59,130,246,0.03) 0%, transparent 50%);
+    pointer-events:none; z-index:0; }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  .header { position:sticky; top:0; z-index:100; background:rgba(10,14,23,0.9); backdrop-filter:blur(20px);
+    border-bottom:1px solid var(--border); padding:0 2rem; }
+  .header-inner { max-width:1500px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; height:56px; }
+  .logo { display:flex; align-items:center; gap:10px; }
+  .logo-icon { width:28px; height:28px; background:linear-gradient(135deg,var(--green),var(--cyan));
+    border-radius:7px; display:flex; align-items:center; justify-content:center;
+    font-size:13px; font-weight:700; color:#000; font-family:'JetBrains Mono',monospace; }
+  .logo-text { font-size:16px; font-weight:700; letter-spacing:-0.02em; }
+  .logo-text span { color:var(--text-dim); font-weight:400; font-size:13px; }
+  .header-status { display:flex; align-items:center; gap:12px; }
+  .status-dot { width:7px; height:7px; border-radius:50%; background:var(--text-dim); animation:pulse 2s infinite; }
+  .status-dot.online { background:var(--green); }
+  .status-dot.syncing { background:var(--amber); animation:pulse 0.8s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .status-label { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-secondary); }
 
-  body {
-    font-family: 'DM Sans', sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
+  /* Nav — two rows: Data + Tax */
+  .nav-wrap { max-width:1500px; margin:0 auto; padding:8px 2rem; display:flex; gap:8px; flex-wrap:wrap; }
+  .nav-group { display:flex; gap:2px; background:var(--bg-card); border-radius:8px; padding:2px; }
+  .nav-group-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.08em;
+    padding:6px 10px; display:flex; align-items:center; font-weight:600; }
+  .nav-btn { background:none; border:none; color:var(--text-secondary); font-family:'DM Sans',sans-serif;
+    font-size:12px; font-weight:500; padding:6px 14px; border-radius:6px; cursor:pointer; transition:all 0.2s; white-space:nowrap; }
+  .nav-btn:hover { color:var(--text-primary); background:var(--bg-card-hover); }
+  .nav-btn.active { color:var(--text-primary); background:var(--bg-primary); box-shadow:0 1px 3px rgba(0,0,0,0.3); }
 
-  /* ── Ambient background ─────────────────────────────── */
-  body::before {
-    content: '';
-    position: fixed;
-    top: -50%; left: -50%;
-    width: 200%; height: 200%;
-    background:
-      radial-gradient(ellipse at 20% 20%, rgba(34, 197, 94, 0.03) 0%, transparent 50%),
-      radial-gradient(ellipse at 80% 80%, rgba(59, 130, 246, 0.03) 0%, transparent 50%);
-    pointer-events: none;
-    z-index: 0;
-  }
+  .main { position:relative; z-index:1; max-width:1500px; margin:0 auto; padding:1.5rem 2rem; }
+  .page { display:none; } .page.active { display:block; animation:fadeIn 0.25s ease; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 
-  /* ── Header ─────────────────────────────────────────── */
-  .header {
-    position: sticky; top: 0; z-index: 100;
-    background: rgba(10, 14, 23, 0.85);
-    backdrop-filter: blur(20px);
-    border-bottom: 1px solid var(--border);
-    padding: 0 2rem;
-  }
-  .header-inner {
-    max-width: 1400px; margin: 0 auto;
-    display: flex; align-items: center; justify-content: space-between;
-    height: 64px;
-  }
-  .logo {
-    display: flex; align-items: center; gap: 12px;
-  }
-  .logo-icon {
-    width: 32px; height: 32px;
-    background: linear-gradient(135deg, var(--green), var(--cyan));
-    border-radius: 8px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; font-weight: 700; color: #000;
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .logo-text {
-    font-size: 18px; font-weight: 700;
-    letter-spacing: -0.02em;
-  }
-  .logo-text span { color: var(--text-dim); font-weight: 400; }
-  .header-status {
-    display: flex; align-items: center; gap: 16px;
-  }
-  .status-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--text-dim);
-    animation: pulse 2s infinite;
-  }
-  .status-dot.online { background: var(--green); }
-  .status-dot.syncing { background: var(--amber); animation: pulse 0.8s infinite; }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-  .status-label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px; color: var(--text-secondary);
-  }
+  .card { background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:1.25rem; margin-bottom:1.25rem; }
+  .card:hover { border-color:var(--border-bright); }
+  .card-title { font-size:12px; font-weight:600; color:var(--text-secondary); text-transform:uppercase;
+    letter-spacing:0.06em; margin-bottom:0.75rem; display:flex; align-items:center; gap:8px; }
 
-  /* ── Navigation ─────────────────────────────────────── */
-  .nav {
-    display: flex; gap: 2px;
-    background: var(--bg-card);
-    border-radius: 10px;
-    padding: 3px;
-  }
-  .nav-btn {
-    background: none; border: none; color: var(--text-secondary);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 13px; font-weight: 500;
-    padding: 8px 18px; border-radius: 8px;
-    cursor: pointer; transition: all 0.2s;
-    white-space: nowrap;
-  }
-  .nav-btn:hover { color: var(--text-primary); background: var(--bg-card-hover); }
-  .nav-btn.active {
-    color: var(--text-primary);
-    background: var(--bg-primary);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  }
+  .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0.75rem; margin-bottom:1.25rem; }
+  .stat-card { background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:1rem 1.25rem; }
+  .stat-label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px; }
+  .stat-value { font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:600; letter-spacing:-0.02em; }
+  .stat-value.usd { color:var(--green); } .stat-value.usd::before { content:'$'; font-size:14px; opacity:0.6; }
+  .stat-value.loss { color:var(--red); } .stat-value.loss::before { content:'$'; font-size:14px; opacity:0.6; }
+  .stat-sub { font-size:11px; color:var(--text-dim); margin-top:3px; font-family:'JetBrains Mono',monospace; }
 
-  /* ── Main layout ────────────────────────────────────── */
-  .main {
-    position: relative; z-index: 1;
-    max-width: 1400px; margin: 0 auto;
-    padding: 2rem;
-  }
-  .page { display: none; }
-  .page.active { display: block; animation: fadeIn 0.3s ease; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .table-wrap { overflow-x:auto; border-radius:8px; border:1px solid var(--border); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600;
+    color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; padding:10px 14px;
+    background:var(--bg-input); border-bottom:1px solid var(--border); white-space:nowrap; }
+  td { padding:8px 14px; border-bottom:1px solid rgba(30,42,58,0.5); white-space:nowrap;
+    font-family:'JetBrains Mono',monospace; font-size:11px; }
+  tr:hover td { background:rgba(255,255,255,0.02); }
+  .cell-usd { color:var(--green); } .cell-loss { color:var(--red); }
+  .cell-buy { color:var(--green); } .cell-sell { color:var(--red); } .cell-dim { color:var(--text-dim); }
 
-  /* ── Cards ──────────────────────────────────────────── */
-  .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1.5rem;
-    transition: border-color 0.2s;
-  }
-  .card:hover { border-color: var(--border-bright); }
-  .card-title {
-    font-size: 13px; font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 1rem;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .card-title .icon { font-size: 16px; }
+  .btn { font-family:'DM Sans',sans-serif; font-size:12px; font-weight:600; padding:8px 16px;
+    border:1px solid var(--border); border-radius:7px; cursor:pointer; transition:all 0.2s;
+    display:inline-flex; align-items:center; gap:6px; }
+  .btn-primary { background:var(--green); color:#000; border-color:var(--green); }
+  .btn-primary:hover { background:var(--green-dim); }
+  .btn-secondary { background:var(--bg-card); color:var(--text-primary); }
+  .btn-secondary:hover { background:var(--bg-card-hover); }
+  .btn-purple { background:var(--purple-bg); color:var(--purple); border-color:rgba(168,85,247,0.3); }
+  .btn-purple:hover { background:rgba(168,85,247,0.15); }
+  .btn-danger { background:var(--red-bg); color:var(--red); border-color:rgba(239,68,68,0.3); }
+  .btn-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:1.25rem; }
 
-  /* ── Stat grid ──────────────────────────────────────── */
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1.5rem;
-  }
-  .stat-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.25rem 1.5rem;
-  }
-  .stat-label {
-    font-size: 12px; color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 6px;
-  }
-  .stat-value {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 24px; font-weight: 600;
-    letter-spacing: -0.02em;
-  }
-  .stat-value.usd { color: var(--green); }
-  .stat-value.usd::before { content: '$'; font-size: 16px; opacity: 0.6; }
-  .stat-sub {
-    font-size: 12px; color: var(--text-dim);
-    margin-top: 4px;
-    font-family: 'JetBrains Mono', monospace;
-  }
+  select,input[type="number"] { font-family:'JetBrains Mono',monospace; font-size:12px;
+    background:var(--bg-input); color:var(--text-primary); border:1px solid var(--border);
+    border-radius:7px; padding:7px 12px; outline:none; }
+  select:focus,input:focus { border-color:var(--blue); }
+  label { font-size:11px; color:var(--text-secondary); display:block; margin-bottom:3px; }
+  .input-group { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
 
-  /* ── Tables ─────────────────────────────────────────── */
-  .table-wrap {
-    overflow-x: auto;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-  }
-  table {
-    width: 100%; border-collapse: collapse;
-    font-size: 13px;
-  }
-  th {
-    text-align: left;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px; font-weight: 600;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 12px 16px;
-    background: var(--bg-input);
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  td {
-    padding: 10px 16px;
-    border-bottom: 1px solid rgba(30,42,58,0.5);
-    white-space: nowrap;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-  }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-  .cell-usd { color: var(--green); }
-  .cell-buy { color: var(--green); }
-  .cell-sell { color: var(--red); }
-  .cell-dim { color: var(--text-dim); }
-  .cell-warn { color: var(--amber); }
+  .console { background:var(--bg-input); border:1px solid var(--border); border-radius:8px;
+    padding:0.75rem; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.8;
+    color:var(--text-secondary); max-height:250px; overflow-y:auto; }
+  .log-ok { color:var(--green); } .log-err { color:var(--red); }
+  .log-warn { color:var(--amber); } .log-info { color:var(--blue); } .log-ts { color:var(--text-dim); }
 
-  /* ── Buttons ────────────────────────────────────────── */
-  .btn {
-    font-family: 'DM Sans', sans-serif;
-    font-size: 13px; font-weight: 600;
-    padding: 10px 20px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: inline-flex; align-items: center; gap: 8px;
-  }
-  .btn-primary {
-    background: var(--green); color: #000; border-color: var(--green);
-  }
-  .btn-primary:hover { background: var(--green-dim); border-color: var(--green-dim); }
-  .btn-secondary {
-    background: var(--bg-card); color: var(--text-primary);
-  }
-  .btn-secondary:hover { background: var(--bg-card-hover); border-color: var(--border-bright); }
-  .btn-danger {
-    background: var(--red-bg); color: var(--red); border-color: rgba(239,68,68,0.3);
-  }
-  .btn-danger:hover { background: rgba(239,68,68,0.15); }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:10px; font-weight:600;
+    font-family:'JetBrains Mono',monospace; }
+  .badge-green { background:var(--green-bg); color:var(--green); }
+  .badge-red { background:var(--red-bg); color:var(--red); }
+  .badge-blue { background:var(--blue-bg); color:var(--blue); }
+  .badge-amber { background:var(--amber-bg); color:var(--amber); }
+  .badge-purple { background:var(--purple-bg); color:var(--purple); }
 
-  /* ── Select / Input ─────────────────────────────────── */
-  select, input[type="number"] {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    background: var(--bg-input);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 14px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  select:focus, input:focus { border-color: var(--blue); }
-  label {
-    font-size: 12px; color: var(--text-secondary);
-    display: block; margin-bottom: 4px;
-  }
-  .input-group { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+  .pipeline-steps { display:flex; gap:12px; margin-bottom:1.25rem; flex-wrap:wrap; }
+  .pipeline-step { flex:1; min-width:200px; background:var(--bg-card); border:1px solid var(--border);
+    border-radius:10px; padding:1rem; text-align:center; }
+  .pipeline-step .step-num { font-size:28px; font-weight:700; color:var(--text-dim); margin-bottom:4px;
+    font-family:'JetBrains Mono',monospace; }
+  .pipeline-step .step-title { font-size:13px; font-weight:600; margin-bottom:2px; }
+  .pipeline-step .step-desc { font-size:11px; color:var(--text-dim); }
+  .pipeline-step.done { border-color:var(--green); }
+  .pipeline-step.done .step-num { color:var(--green); }
 
-  /* ── Log/Console ────────────────────────────────────── */
-  .console {
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1rem;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    line-height: 1.8;
-    color: var(--text-secondary);
-    max-height: 300px;
-    overflow-y: auto;
-  }
-  .console .log-ok { color: var(--green); }
-  .console .log-err { color: var(--red); }
-  .console .log-warn { color: var(--amber); }
-  .console .log-info { color: var(--blue); }
-  .console .log-ts { color: var(--text-dim); }
-
-  /* ── Badge ──────────────────────────────────────────── */
-  .badge {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 600;
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .badge-green { background: var(--green-bg); color: var(--green); }
-  .badge-red { background: var(--red-bg); color: var(--red); }
-  .badge-blue { background: var(--blue-bg); color: var(--blue); }
-  .badge-amber { background: var(--amber-bg); color: var(--amber); }
-
-  /* ── Exchange chips ─────────────────────────────────── */
-  .exchange-row {
-    display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;
-  }
-  .exchange-chip {
-    display: flex; align-items: center; gap: 8px;
-    background: var(--bg-card); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 16px;
-    font-size: 14px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.04em;
-  }
-  .exchange-chip .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-  }
-
-  /* ── Responsive ─────────────────────────────────────── */
-  @media (max-width: 768px) {
-    .header-inner { flex-wrap: wrap; height: auto; padding: 12px 0; gap: 12px; }
-    .main { padding: 1rem; }
-    .stat-grid { grid-template-columns: 1fr 1fr; }
-    .stat-value { font-size: 18px; }
-  }
+  @media (max-width:768px) { .main{padding:1rem;} .stat-grid{grid-template-columns:1fr 1fr;} .nav-wrap{padding:6px 1rem;} }
 </style>
 </head>
 <body>
 
-<!-- ═══ HEADER ═══════════════════════════════════════════ -->
 <div class="header">
   <div class="header-inner">
-    <div class="logo">
-      <div class="logo-icon">TC</div>
-      <div class="logo-text">Tax Collector <span>v2</span></div>
+    <div class="logo"><div class="logo-icon">TC</div><div class="logo-text">Tax Collector <span>v3</span></div></div>
+    <div class="header-status"><div class="status-dot" id="healthDot"></div><span class="status-label" id="healthLabel">checking...</span></div>
+  </div>
+  <div class="nav-wrap">
+    <div class="nav-group">
+      <span class="nav-group-label">Data</span>
+      <button class="nav-btn active" onclick="showPage('overview',this)">Overview</button>
+      <button class="nav-btn" onclick="showPage('sync',this)">Sync</button>
+      <button class="nav-btn" onclick="showPage('trades',this)">Trades</button>
+      <button class="nav-btn" onclick="showPage('prices',this)">Prices</button>
     </div>
-    <nav class="nav">
-      <button class="nav-btn active" onclick="showPage('overview')">Overview</button>
-      <button class="nav-btn" onclick="showPage('sync')">Sync</button>
-      <button class="nav-btn" onclick="showPage('trades')">Trades</button>
-      <button class="nav-btn" onclick="showPage('export')">Export</button>
-      <button class="nav-btn" onclick="showPage('prices')">Price Cache</button>
-    </nav>
-    <div class="header-status">
-      <div class="status-dot" id="healthDot"></div>
-      <span class="status-label" id="healthLabel">checking...</span>
+    <div class="nav-group">
+      <span class="nav-group-label">Tax</span>
+      <button class="nav-btn" onclick="showPage('tax-pipeline',this)">Pipeline</button>
+      <button class="nav-btn" onclick="showPage('form8949',this)">Form 8949</button>
+      <button class="nav-btn" onclick="showPage('income',this)">Income</button>
+      <button class="nav-btn" onclick="showPage('transfers',this)">Transfers</button>
+      <button class="nav-btn" onclick="showPage('lots',this)">Lots</button>
+      <button class="nav-btn" onclick="showPage('fees',this)">Fees</button>
+    </div>
+    <div class="nav-group">
+      <span class="nav-group-label">Export</span>
+      <button class="nav-btn" onclick="showPage('export',this)">Download</button>
     </div>
   </div>
 </div>
 
-<!-- ═══ MAIN ═════════════════════════════════════════════ -->
 <div class="main">
 
-<!-- ── OVERVIEW PAGE ────────────────────────────────────── -->
+<!-- ═══ OVERVIEW ══════════════════════════════════════════ -->
 <div class="page active" id="page-overview">
-  <div class="stat-grid" id="overviewStats">
-    <div class="stat-card"><div class="stat-label">Loading...</div><div class="stat-value">—</div></div>
+  <div class="stat-grid" id="overviewStats"><div class="stat-card"><div class="stat-label">Loading...</div><div class="stat-value">—</div></div></div>
+  <div class="card"><div class="card-title">📊 Exchange Summary</div>
+    <div class="table-wrap"><table><thead><tr><th>Exchange</th><th>Trades</th><th>Volume (USD)</th><th>Fees (USD)</th><th>Deposits</th><th>Dep. (USD)</th><th>Withdrawals</th><th>Wd. (USD)</th></tr></thead>
+    <tbody id="summaryTable"><tr><td colspan="8" class="cell-dim">Loading...</td></tr></tbody></table></div>
   </div>
-  <div class="card">
-    <div class="card-title"><span class="icon">📊</span> Exchange Summary</div>
-    <div class="table-wrap">
-      <table><thead><tr>
-        <th>Exchange</th><th>Trades</th><th>Volume (USD)</th><th>Fees (USD)</th>
-        <th>Deposits</th><th>Dep. (USD)</th><th>Withdrawals</th><th>Wd. (USD)</th>
-      </tr></thead><tbody id="summaryTable"><tr><td colspan="8" class="cell-dim">Loading...</td></tr></tbody></table>
-    </div>
-  </div>
-  <div id="missingWarning" style="display:none;" class="card" style="border-color: rgba(245,158,11,0.3);">
-    <div class="card-title" style="color: var(--amber);"><span class="icon">⚠️</span> Missing USD Values</div>
-    <p id="missingText" style="font-size:14px; color: var(--text-secondary); margin-bottom: 12px;"></p>
-    <button class="btn btn-secondary" onclick="runBackfill()">Run USD Backfill</button>
+  <div id="missingWarning" style="display:none" class="card">
+    <div class="card-title" style="color:var(--amber)">⚠️ Missing USD Values</div>
+    <p id="missingText" style="font-size:13px;color:var(--text-secondary);margin-bottom:10px"></p>
+    <button class="btn btn-secondary" onclick="api('/backfill-usd?batch_size=50','POST').then(()=>logC('Backfill started','info'))">Run Backfill</button>
   </div>
 </div>
 
-<!-- ── SYNC PAGE ───────────────────────────────────────── -->
+<!-- ═══ SYNC ═════════════════════════════════════════════ -->
 <div class="page" id="page-sync">
   <div class="btn-row">
-    <button class="btn btn-primary" onclick="syncAll(false)">⟳ Incremental Sync All</button>
-    <button class="btn btn-danger" onclick="syncAll(true)">⟳ Full Re-sync All</button>
-    <div style="flex:1;"></div>
-    <button class="btn btn-secondary" onclick="refreshSyncStatus()">Refresh Status</button>
+    <button class="btn btn-primary" onclick="api('/sync?full=false','POST').then(()=>{logC('Incremental sync started','info');setTimeout(loadSyncStatus,3000)})">⟳ Sync All</button>
+    <button class="btn btn-danger" onclick="if(confirm('Full re-sync?'))api('/sync?full=true','POST').then(()=>{logC('Full sync started','info');setTimeout(loadSyncStatus,3000)})">⟳ Full Re-sync</button>
+    <div style="flex:1"></div>
+    <button class="btn btn-secondary" onclick="loadSyncStatus()">Refresh</button>
   </div>
-
-  <div class="card">
-    <div class="card-title"><span class="icon">🔄</span> Sync Status</div>
-    <div class="table-wrap">
-      <table><thead><tr>
-        <th>Exchange</th><th>Status</th><th>Trades</th><th>Orders</th>
-        <th>Deposits</th><th>Withdrawals</th><th>Pools</th><th>Finished</th>
-      </tr></thead><tbody id="syncTable"><tr><td colspan="8" class="cell-dim">No syncs yet</td></tr></tbody></table>
-    </div>
+  <div class="card"><div class="card-title">🔄 Sync Status</div>
+    <div class="table-wrap"><table><thead><tr><th>Exchange</th><th>Status</th><th>Trades</th><th>Orders</th><th>Deposits</th><th>Withdrawals</th><th>Pools</th><th>Finished</th></tr></thead>
+    <tbody id="syncTable"><tr><td colspan="8" class="cell-dim">No syncs yet</td></tr></tbody></table></div>
   </div>
-
-  <div class="card">
-    <div class="card-title"><span class="icon">💲</span> USD Backfill</div>
-    <div class="input-group" style="margin-bottom: 1rem;">
-      <div>
-        <label>Batch Size</label>
-        <input type="number" id="backfillBatch" value="50" min="1" max="500" style="width:100px;">
-      </div>
-      <button class="btn btn-secondary" onclick="runBackfill()">Run Backfill</button>
-      <button class="btn btn-secondary" onclick="refreshBackfillStatus()">Check Status</button>
+  <div class="card"><div class="card-title">💲 USD Backfill</div>
+    <div class="input-group" style="margin-bottom:0.75rem">
+      <div><label>Batch Size</label><input type="number" id="backfillBatch" value="50" min="1" max="500" style="width:90px"></div>
+      <button class="btn btn-secondary" onclick="api('/backfill-usd?batch_size='+document.getElementById('backfillBatch').value,'POST').then(()=>{logC('Backfill started','info');setTimeout(loadBackfillStatus,5000)})">Run</button>
+      <button class="btn btn-secondary" onclick="loadBackfillStatus()">Status</button>
     </div>
-    <div class="console" id="backfillConsole">Idle — no backfill has been run this session.</div>
+    <div class="console" id="console">Ready.</div>
   </div>
 </div>
 
-<!-- ── TRADES PAGE ─────────────────────────────────────── -->
+<!-- ═══ TRADES ═══════════════════════════════════════════ -->
 <div class="page" id="page-trades">
-  <div class="input-group" style="margin-bottom: 1.5rem;">
-    <div>
-      <label>Exchange</label>
-      <select id="tradeExchange"><option value="nonkyc">NONKYC</option><option value="mexc">MEXC</option></select>
-    </div>
-    <div>
-      <label>Year</label>
-      <input type="number" id="tradeYear" placeholder="All" min="2020" max="2030" style="width:100px;">
-    </div>
-    <div>
-      <label>Limit</label>
-      <input type="number" id="tradeLimit" value="50" min="1" max="500" style="width:80px;">
-    </div>
-    <button class="btn btn-primary" onclick="loadTrades()">Load Trades</button>
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Exchange</label><select id="tradeEx"><option value="nonkyc">NONKYC</option><option value="mexc">MEXC</option></select></div>
+    <div><label>Year</label><input type="number" id="tradeYear" placeholder="All" min="2020" max="2030" style="width:90px"></div>
+    <div><label>Limit</label><input type="number" id="tradeLimit" value="50" min="1" max="500" style="width:70px"></div>
+    <button class="btn btn-primary" onclick="loadTrades()">Load</button>
   </div>
-
-  <div class="card">
-    <div class="card-title"><span class="icon">📈</span> Trade History <span id="tradeCount" class="badge badge-blue" style="margin-left:8px;"></span></div>
-    <div class="table-wrap">
-      <table><thead><tr>
-        <th>Date</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th>Total</th>
-        <th>Fee</th><th>Total (USD)</th><th>Fee (USD)</th><th>Base Rate</th>
-      </tr></thead><tbody id="tradesTable"><tr><td colspan="10" class="cell-dim">Select an exchange and click Load Trades</td></tr></tbody></table>
-    </div>
+  <div class="card"><div class="card-title">📈 Trade History <span id="tradeCount" class="badge badge-blue" style="margin-left:6px"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th>Total</th><th>Fee</th><th>Total (USD)</th><th>Fee (USD)</th></tr></thead>
+    <tbody id="tradesTable"><tr><td colspan="9" class="cell-dim">Select exchange and click Load</td></tr></tbody></table></div>
   </div>
 </div>
 
-<!-- ── EXPORT PAGE ─────────────────────────────────────── -->
+<!-- ═══ PRICES ═══════════════════════════════════════════ -->
+<div class="page" id="page-prices">
+  <div class="stat-grid" id="priceStats"><div class="stat-card"><div class="stat-label">Loading...</div></div></div>
+  <div class="card"><div class="card-title">💰 Cached Assets (Top 20)</div>
+    <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Cached Days</th><th>Earliest</th><th>Latest</th></tr></thead>
+    <tbody id="priceTable"><tr><td colspan="4" class="cell-dim">Loading...</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ TAX PIPELINE ═════════════════════════════════════ -->
+<div class="page" id="page-tax-pipeline">
+  <div class="pipeline-steps">
+    <div class="pipeline-step" id="pStep1"><div class="step-num">1</div><div class="step-title">Match Transfers</div><div class="step-desc">Pair cross-exchange moves</div></div>
+    <div class="pipeline-step" id="pStep2"><div class="step-num">2</div><div class="step-title">Classify Income</div><div class="step-desc">Tag staking & rewards</div></div>
+    <div class="pipeline-step" id="pStep3"><div class="step-num">3</div><div class="step-title">FIFO Compute</div><div class="step-desc">Cost basis & Form 8949</div></div>
+  </div>
+  <div class="btn-row">
+    <div><label>Tax Year</label><input type="number" id="taxYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-purple" onclick="runFullPipeline()">▶ Run Full Pipeline</button>
+    <div style="flex:1"></div>
+    <button class="btn btn-secondary" onclick="runStep('/tax/match-transfers','POST',1)">Step 1 Only</button>
+    <button class="btn btn-secondary" onclick="runStep('/tax/classify-income','POST',2)">Step 2 Only</button>
+    <button class="btn btn-secondary" onclick="runStep('/tax/compute?year='+taxYr(),'POST',3)">Step 3 Only</button>
+  </div>
+  <div class="card"><div class="card-title">📋 Pipeline Results</div>
+    <div class="console" id="pipelineConsole">Click "Run Full Pipeline" to compute taxes for the selected year.</div>
+  </div>
+  <div class="card" id="schedDCard" style="display:none">
+    <div class="card-title">📊 Schedule D Summary</div>
+    <div class="table-wrap"><table><thead><tr><th>Category</th><th>Proceeds</th><th>Cost Basis</th><th>Net Gain/Loss</th></tr></thead>
+    <tbody id="schedDTable"></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ FORM 8949 ════════════════════════════════════════ -->
+<div class="page" id="page-form8949">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Tax Year</label><input type="number" id="f8949Year" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-primary" onclick="loadForm8949()">Load Form 8949</button>
+  </div>
+  <div class="stat-grid" id="f8949Stats"></div>
+  <div class="card"><div class="card-title">📄 Form 8949 — Short-Term (Box B) <span id="f8949STCount" class="badge badge-amber"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Description</th><th>Acquired</th><th>Sold</th><th>Proceeds</th><th>Cost Basis</th><th>Gain/Loss</th><th>Days</th></tr></thead>
+    <tbody id="f8949STTable"><tr><td colspan="7" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+  <div class="card"><div class="card-title">📄 Form 8949 — Long-Term (Box D) <span id="f8949LTCount" class="badge badge-blue"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Description</th><th>Acquired</th><th>Sold</th><th>Proceeds</th><th>Cost Basis</th><th>Gain/Loss</th><th>Days</th></tr></thead>
+    <tbody id="f8949LTTable"><tr><td colspan="7" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ INCOME ═══════════════════════════════════════════ -->
+<div class="page" id="page-income">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Year</label><input type="number" id="incomeYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-primary" onclick="loadIncome()">Load Income</button>
+  </div>
+  <div class="stat-grid" id="incomeStats"></div>
+  <div class="card"><div class="card-title">💵 Ordinary Income Events (Staking, Rewards, Airdrops)</div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Amount</th><th>FMV (USD)</th><th>Exchange</th></tr></thead>
+    <tbody id="incomeTable"><tr><td colspan="6" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ TRANSFERS ════════════════════════════════════════ -->
+<div class="page" id="page-transfers">
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="loadTransfers()">Load Matched Transfers</button>
+    <button class="btn btn-secondary" onclick="loadUnmatched()">Show Unmatched</button>
+  </div>
+  <div class="card"><div class="card-title">🔗 Matched Transfers (Non-Taxable) <span id="tmCount" class="badge badge-green"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Asset</th><th>Amount</th><th>From</th><th>To</th><th>TX Hash</th><th>Confidence</th></tr></thead>
+    <tbody id="transferTable"><tr><td colspan="7" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+  <div class="card" id="unmatchedCard" style="display:none"><div class="card-title">⚠️ Unmatched Withdrawals & Deposits</div>
+    <div id="unmatchedContent"></div>
+  </div>
+</div>
+
+<!-- ═══ LOTS ═════════════════════════════════════════════ -->
+<div class="page" id="page-lots">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Asset Filter</label><input type="text" id="lotAsset" placeholder="All assets" style="width:120px;font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:7px;padding:7px 12px"></div>
+    <button class="btn btn-primary" onclick="loadLots()">Load Lots</button>
+  </div>
+  <div class="card"><div class="card-title">📦 FIFO Acquisition Lots (Current Holdings) <span id="lotCount" class="badge badge-blue"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Acquired</th><th>Source</th><th>Exchange</th><th>Original Qty</th><th>Remaining</th><th>Cost/Unit (USD)</th><th>Total Cost (USD)</th></tr></thead>
+    <tbody id="lotsTable"><tr><td colspan="8" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ FEES ═════════════════════════════════════════════ -->
+<div class="page" id="page-fees">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Year</label><input type="number" id="feeYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-primary" onclick="loadFees()">Load Fee Summary</button>
+  </div>
+  <div class="stat-grid" id="feeStats"></div>
+  <div class="card"><div class="card-title">💸 Deductible Trading Fees by Exchange</div>
+    <div class="table-wrap"><table><thead><tr><th>Exchange</th><th>Trades</th><th>Total Fees (USD)</th></tr></thead>
+    <tbody id="feeTable"><tr><td colspan="3" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ EXPORT ═══════════════════════════════════════════ -->
 <div class="page" id="page-export">
   <div class="card">
-    <div class="card-title"><span class="icon">📁</span> Download Tax Report (XLSX)</div>
-    <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 1.5rem; line-height: 1.7;">
-      Generates an Excel workbook with a <strong style="color:var(--text-primary);">Summary</strong> tab
-      plus one tab per exchange. Each tab contains Trades, Orders, Deposits, Withdrawals, and Pool Activity
-      with full USD valuations alongside the original crypto amounts.
-      <br>USD columns are <span style="color: var(--green);">green-formatted</span>.
-      Missing values appear as <span style="color: var(--red); font-style:italic;">red italic</span>.
+    <div class="card-title">📁 Download Tax Reports</div>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:1.25rem;line-height:1.7">
+      <strong style="color:var(--text-primary)">Full Tax Report</strong> — 8+ tabs: Summary, Form 8949 (ST/LT), Income Schedule, Transfer Recon, Fee Summary, Lot Inventory, per-exchange raw data. Run the <span class="badge badge-purple">Tax Pipeline</span> first.<br>
+      <strong style="color:var(--text-primary)">Raw Trade Report</strong> — per-exchange trade/deposit/withdrawal data with USD values. No computation needed.
     </p>
     <div class="input-group">
-      <div>
-        <label>Tax Year</label>
-        <input type="number" id="exportYear" placeholder="All years" min="2020" max="2030" style="width:120px;">
-      </div>
-      <a id="exportLink" class="btn btn-primary" style="text-decoration:none;" onclick="downloadReport(event)">
-        ⬇ Download XLSX
-      </a>
+      <div><label>Tax Year</label><input type="number" id="exportYear" value="2025" min="2020" max="2030" style="width:100px"></div>
+      <button class="btn btn-purple" onclick="window.open('/export/tax-report?year='+document.getElementById('exportYear').value)">⬇ Full Tax Report (Form 8949)</button>
+      <button class="btn btn-secondary" onclick="window.open('/export/xlsx'+(document.getElementById('exportYear').value?'?year='+document.getElementById('exportYear').value:''))">⬇ Raw Trade Report</button>
     </div>
-  </div>
-</div>
-
-<!-- ── PRICES PAGE ─────────────────────────────────────── -->
-<div class="page" id="page-prices">
-  <div class="stat-grid" id="priceStats">
-    <div class="stat-card"><div class="stat-label">Loading...</div><div class="stat-value">—</div></div>
-  </div>
-  <div class="card">
-    <div class="card-title"><span class="icon">💰</span> Cached Assets (Top 20)</div>
-    <div class="table-wrap">
-      <table><thead><tr>
-        <th>Asset</th><th>Cached Days</th><th>Earliest</th><th>Latest</th>
-      </tr></thead><tbody id="priceTable"><tr><td colspan="4" class="cell-dim">Loading...</td></tr></tbody></table>
-    </div>
-  </div>
-  <div style="margin-top:1rem;">
-    <button class="btn btn-secondary" onclick="loadPriceStats()">⟳ Refresh</button>
   </div>
 </div>
 
 </div><!-- /main -->
 
 <script>
-const API = '';  // Same origin
-
-// ── Navigation ───────────────────────────────────────────
-function showPage(id) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('page-' + id).classList.add('active');
-  event.target.classList.add('active');
-
-  if (id === 'overview') loadOverview();
-  if (id === 'sync') refreshSyncStatus();
-  if (id === 'prices') loadPriceStats();
+const API='';
+function showPage(id,btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+id).classList.add('active');
+  if(btn)btn.classList.add('active');
+  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats};
+  if(loaders[id])loaders[id]();
 }
+function fU(v){if(!v||v==='None'||v==='null')return'—';const n=parseFloat(v);if(isNaN(n))return'—';return(n>=1000?'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):n>=1?'$'+n.toFixed(2):'$'+n.toFixed(6));}
+function fC(v){if(!v||v==='0')return'0';const n=parseFloat(v);if(isNaN(n))return v;return n>=1000?n.toLocaleString('en-US',{maximumFractionDigits:4}):n>=1?n.toFixed(4):n.toFixed(8);}
+function fD(v){if(!v)return'—';return new Date(v).toISOString().replace('T',' ').substring(0,19);}
+function fDS(v){if(!v)return'—';return new Date(v).toISOString().substring(0,10);}
+function badge(s){const m={success:'badge-green',running:'badge-amber',error:'badge-red',idle:'badge-blue'};return'<span class="badge '+(m[s]||'badge-blue')+'">'+s+'</span>';}
+function glClass(v){const n=parseFloat(v);return n<0?'cell-loss':'cell-usd';}
+function taxYr(){return document.getElementById('taxYear').value||'2025';}
+function logC(msg,type){const el=document.getElementById('console');const ts=new Date().toISOString().substring(11,19);const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';el.innerHTML+='<div><span class="log-ts">['+ts+']</span> <span class="'+cls+'">'+msg+'</span></div>';el.scrollTop=el.scrollHeight;}
+function logP(msg,type){const el=document.getElementById('pipelineConsole');const ts=new Date().toISOString().substring(11,19);const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';el.innerHTML+='<div><span class="log-ts">['+ts+']</span> <span class="'+cls+'">'+msg+'</span></div>';el.scrollTop=el.scrollHeight;}
+async function api(path,method='GET'){try{const r=await fetch(API+path,{method});if(!r.ok)throw new Error(r.status+' '+r.statusText);return await r.json();}catch(e){console.error('API:',path,e);return null;}}
 
-// ── Helpers ──────────────────────────────────────────────
-function fmtUsd(val) {
-  if (!val || val === 'None' || val === 'null') return '—';
-  const n = parseFloat(val);
-  if (isNaN(n)) return '—';
-  if (n >= 1000) return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  if (n >= 1) return '$' + n.toFixed(2);
-  return '$' + n.toFixed(6);
-}
-function fmtCrypto(val) {
-  if (!val || val === '0') return '0';
-  const n = parseFloat(val);
-  if (isNaN(n)) return val;
-  if (n >= 1000) return n.toLocaleString('en-US', {maximumFractionDigits: 4});
-  if (n >= 1) return n.toFixed(4);
-  return n.toFixed(8);
-}
-function fmtDate(val) {
-  if (!val) return '—';
-  const d = new Date(val);
-  return d.toISOString().replace('T', ' ').substring(0, 19);
-}
-function badge(status) {
-  const map = {success:'badge-green', running:'badge-amber', error:'badge-red', idle:'badge-blue'};
-  return `<span class="badge ${map[status]||'badge-blue'}">${status}</span>`;
-}
+// ── Health ───────────────────────────────────────────────
+async function checkHealth(){const d=await api('/health');const dot=document.getElementById('healthDot'),lbl=document.getElementById('healthLabel');if(d&&d.status==='ok'){dot.className='status-dot online';lbl.textContent='online — '+d.exchanges.join(', ');}else{dot.className='status-dot';lbl.textContent='offline';}}
 
-async function api(path, method='GET') {
-  try {
-    const r = await fetch(API + path, {method});
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    return await r.json();
-  } catch(e) {
-    console.error('API error:', path, e);
-    return null;
-  }
-}
+// ── Overview ─────────────────────────────────────────────
+async function loadOverview(){const d=await api('/summary');if(!d)return;let tT=0,tV=0,tF=0,tD=0,tW=0;const exs=Object.keys(d.trades||{});
+exs.forEach(e=>{const t=d.trades[e]||{};tT+=t.count||0;tV+=parseFloat(t.volume_usd||0);tF+=parseFloat(t.fees_usd||0);});
+Object.values(d.deposits||{}).forEach(x=>tD+=parseFloat(x.total_usd||0));
+Object.values(d.withdrawals||{}).forEach(x=>tW+=parseFloat(x.total_usd||0));
+const m=d.missing_usd||{},tM=(m.trades||0)+(m.deposits||0)+(m.withdrawals||0);
+document.getElementById('overviewStats').innerHTML=`
+<div class="stat-card"><div class="stat-label">Total Trades</div><div class="stat-value">${tT.toLocaleString()}</div><div class="stat-sub">${exs.length} exchange${exs.length!==1?'s':''}</div></div>
+<div class="stat-card"><div class="stat-label">Trade Volume</div><div class="stat-value usd">${tV.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Total Fees</div><div class="stat-value usd">${tF.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Deposits (USD)</div><div class="stat-value usd">${tD.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Withdrawals (USD)</div><div class="stat-value usd">${tW.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Missing USD</div><div class="stat-value" style="color:${tM>0?'var(--amber)':'var(--green)'}">${tM}</div></div>`;
+let rows='';exs.forEach(e=>{const t=d.trades[e]||{},dp=d.deposits?.[e]||{},w=d.withdrawals?.[e]||{};
+rows+=`<tr><td style="text-transform:uppercase;font-weight:600">${e}</td><td>${(t.count||0).toLocaleString()}</td><td class="cell-usd">${fU(t.volume_usd)}</td><td class="cell-usd">${fU(t.fees_usd)}</td><td>${(dp.count||0).toLocaleString()}</td><td class="cell-usd">${fU(dp.total_usd)}</td><td>${(w.count||0).toLocaleString()}</td><td class="cell-usd">${fU(w.total_usd)}</td></tr>`;});
+document.getElementById('summaryTable').innerHTML=rows||'<tr><td colspan="8" class="cell-dim">No data — run a sync</td></tr>';
+const wEl=document.getElementById('missingWarning');if(tM>0){wEl.style.display='block';document.getElementById('missingText').textContent=`${m.trades||0} trades, ${m.deposits||0} deposits, ${m.withdrawals||0} withdrawals missing USD. Run backfill to resolve.`;}else{wEl.style.display='none';}}
 
-// ── Health check ─────────────────────────────────────────
-async function checkHealth() {
-  const dot = document.getElementById('healthDot');
-  const label = document.getElementById('healthLabel');
-  const data = await api('/health');
-  if (data && data.status === 'ok') {
-    dot.className = 'status-dot online';
-    label.textContent = 'online — ' + data.exchanges.join(', ');
-  } else {
-    dot.className = 'status-dot';
-    label.textContent = 'offline';
-  }
-}
+// ── Sync ─────────────────────────────────────────────────
+async function loadSyncStatus(){const d=await api('/sync/status');if(!d)return;const exs=Object.keys(d);if(!exs.length){document.getElementById('syncTable').innerHTML='<tr><td colspan="8" class="cell-dim">No syncs yet</td></tr>';return;}
+let rows='',any=false;exs.forEach(e=>{const s=d[e];if(s.status==='running')any=true;rows+=`<tr><td style="text-transform:uppercase;font-weight:600">${e}</td><td>${badge(s.status)}</td><td>${s.trades??'—'}</td><td>${s.orders??'—'}</td><td>${s.deposits??'—'}</td><td>${s.withdrawals??'—'}</td><td>${s.pools??'—'}</td><td class="cell-dim">${s.finished?fD(s.finished):(s.started?'running...':'—')}</td></tr>`;});
+document.getElementById('syncTable').innerHTML=rows;if(any){document.getElementById('healthDot').className='status-dot syncing';setTimeout(loadSyncStatus,5000);}else{document.getElementById('healthDot').className='status-dot online';}}
 
-// ── Overview page ────────────────────────────────────────
-async function loadOverview() {
-  const data = await api('/summary');
-  if (!data) return;
+async function loadBackfillStatus(){const d=await api('/backfill-usd/status');if(!d)return;if(d.status==='running'){logC('Backfill running...','warn');setTimeout(loadBackfillStatus,5000);}else if(d.status==='success'){const f=d.filled||{};logC(`Backfill done: ${f.trades||0} trades, ${f.deposits||0} deposits, ${f.withdrawals||0} withdrawals`,'ok');}else if(d.status==='error'){logC('Backfill error: '+(d.error||'unknown'),'err');}}
 
-  let totalTrades = 0, totalVol = 0, totalFees = 0, totalDeps = 0, totalWds = 0;
-  const exchanges = Object.keys(data.trades || {});
+// ── Trades ───────────────────────────────────────────────
+async function loadTrades(){const ex=document.getElementById('tradeEx').value,yr=document.getElementById('tradeYear').value,lim=document.getElementById('tradeLimit').value||50;
+let url=`/trades/${ex}?limit=${lim}`;if(yr)url+=`&year=${yr}`;const d=await api(url);if(!d)return;
+document.getElementById('tradeCount').textContent=d.count+' loaded';const ts=d.trades||[];if(!ts.length){document.getElementById('tradesTable').innerHTML='<tr><td colspan="9" class="cell-dim">No trades found</td></tr>';return;}
+let rows='';ts.forEach(t=>{rows+=`<tr><td class="cell-dim">${fD(t.executed_at)}</td><td style="font-weight:600">${t.market}</td><td class="${t.side==='buy'?'cell-buy':'cell-sell'}" style="text-transform:uppercase;font-weight:600">${t.side}</td><td>${fC(t.price)}</td><td>${fC(t.quantity)}</td><td>${fC(t.total)}</td><td>${fC(t.fee)}</td><td class="cell-usd">${fU(t.total_usd)}</td><td class="cell-usd">${fU(t.fee_usd)}</td></tr>`;});
+document.getElementById('tradesTable').innerHTML=rows;}
 
-  exchanges.forEach(ex => {
-    const t = data.trades[ex] || {};
-    totalTrades += t.count || 0;
-    totalVol += parseFloat(t.volume_usd || 0);
-    totalFees += parseFloat(t.fees_usd || 0);
-  });
-  Object.values(data.deposits || {}).forEach(d => {
-    totalDeps += parseFloat(d.total_usd || 0);
-  });
-  Object.values(data.withdrawals || {}).forEach(w => {
-    totalWds += parseFloat(w.total_usd || 0);
-  });
+// ── Prices ───────────────────────────────────────────────
+async function loadPriceStats(){const d=await api('/prices/stats');if(!d)return;
+document.getElementById('priceStats').innerHTML=`<div class="stat-card"><div class="stat-label">Cached Prices</div><div class="stat-value">${(d.total_cached_prices||0).toLocaleString()}</div><div class="stat-sub">asset-day pairs</div></div><div class="stat-card"><div class="stat-label">Unique Assets</div><div class="stat-value">${d.unique_assets||0}</div></div>`;
+const a=d.top_assets||[];let rows='';a.forEach(x=>{rows+=`<tr><td style="font-weight:600">${x.asset}</td><td>${x.cached_days}</td><td class="cell-dim">${x.earliest}</td><td class="cell-dim">${x.latest}</td></tr>`;});
+document.getElementById('priceTable').innerHTML=rows||'<tr><td colspan="4" class="cell-dim">No prices cached</td></tr>';}
 
-  const miss = data.missing_usd || {};
-  const totalMissing = (miss.trades||0) + (miss.deposits||0) + (miss.withdrawals||0);
+// ── Tax Pipeline ─────────────────────────────────────────
+async function runStep(path,method,step){logP(`Running step ${step}...`,'info');const d=await api(path,method);
+if(d){logP(`Step ${step} complete: ${JSON.stringify(d).substring(0,200)}`,'ok');document.getElementById('pStep'+step).classList.add('done');}else{logP(`Step ${step} failed`,'err');}}
 
-  document.getElementById('overviewStats').innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">Total Trades</div>
-      <div class="stat-value">${totalTrades.toLocaleString()}</div>
-      <div class="stat-sub">${exchanges.length} exchange${exchanges.length!==1?'s':''}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Trade Volume</div>
-      <div class="stat-value usd">${totalVol.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Total Fees</div>
-      <div class="stat-value usd">${totalFees.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Deposits (USD)</div>
-      <div class="stat-value usd">${totalDeps.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Withdrawals (USD)</div>
-      <div class="stat-value usd">${totalWds.toLocaleString('en-US',{maximumFractionDigits:2})}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Missing USD</div>
-      <div class="stat-value" style="color: ${totalMissing>0?'var(--amber)':'var(--green)'}">${totalMissing}</div>
-      <div class="stat-sub">${totalMissing===0?'all resolved':'needs backfill'}</div>
-    </div>
-  `;
+async function runFullPipeline(){const yr=taxYr();const el=document.getElementById('pipelineConsole');el.innerHTML='';
+[1,2,3].forEach(i=>document.getElementById('pStep'+i).classList.remove('done'));
+logP('Starting full tax pipeline for '+yr,'info');
+logP('Step 1: Matching transfers...','info');const r1=await api('/tax/match-transfers','POST');
+if(r1){logP(`Matched ${r1.matched_pairs||0} transfer pairs`,'ok');document.getElementById('pStep1').classList.add('done');}else{logP('Transfer matching failed','err');}
+logP('Step 2: Classifying income...','info');const r2=await api('/tax/classify-income','POST');
+if(r2){logP(`Found ${r2.total_events||0} income events`,'ok');document.getElementById('pStep2').classList.add('done');}else{logP('Income classification failed','err');}
+logP('Step 3: FIFO computation for '+yr+'...','info');const r3=await api('/tax/compute?year='+yr,'POST');
+if(r3){logP(`Done! ${r3.total_disposals||0} disposals, net: ${r3.net_total||'$0'}`,'ok');document.getElementById('pStep3').classList.add('done');
+logP(`Short-term: gains ${r3.short_term_gains}, losses ${r3.short_term_losses}`,'info');
+logP(`Long-term: gains ${r3.long_term_gains}, losses ${r3.long_term_losses}`,'info');
+logP(`Total fees: ${r3.total_fees_usd}`,'info');loadScheduleD(yr);}else{logP('FIFO computation failed','err');}}
 
-  // Summary table
-  let rows = '';
-  exchanges.forEach(ex => {
-    const t = data.trades[ex] || {};
-    const d = data.deposits?.[ex] || {};
-    const w = data.withdrawals?.[ex] || {};
-    rows += `<tr>
-      <td style="text-transform:uppercase; font-weight:600;">${ex}</td>
-      <td>${(t.count||0).toLocaleString()}</td>
-      <td class="cell-usd">${fmtUsd(t.volume_usd)}</td>
-      <td class="cell-usd">${fmtUsd(t.fees_usd)}</td>
-      <td>${(d.count||0).toLocaleString()}</td>
-      <td class="cell-usd">${fmtUsd(d.total_usd)}</td>
-      <td>${(w.count||0).toLocaleString()}</td>
-      <td class="cell-usd">${fmtUsd(w.total_usd)}</td>
-    </tr>`;
-  });
-  if (!rows) rows = '<tr><td colspan="8" class="cell-dim">No data yet — run a sync first</td></tr>';
-  document.getElementById('summaryTable').innerHTML = rows;
+async function loadScheduleD(yr){const d=await api('/tax/schedule-d?year='+yr);if(!d)return;
+document.getElementById('schedDCard').style.display='block';const st=d.short_term||{},lt=d.long_term||{};
+const nst=parseFloat(st.gain_loss||0),nlt=parseFloat(lt.gain_loss||0),net=nst+nlt;
+document.getElementById('schedDTable').innerHTML=`
+<tr><td>Short-Term (&lt; 1 year)</td><td class="cell-usd">${fU(st.proceeds)}</td><td class="cell-usd">${fU(st.cost_basis)}</td><td class="${glClass(st.gain_loss)}">${fU(st.gain_loss)}</td></tr>
+<tr><td>Long-Term (≥ 1 year)</td><td class="cell-usd">${fU(lt.proceeds)}</td><td class="cell-usd">${fU(lt.cost_basis)}</td><td class="${glClass(lt.gain_loss)}">${fU(lt.gain_loss)}</td></tr>
+<tr style="font-weight:700"><td>NET TOTAL</td><td></td><td></td><td class="${net<0?'cell-loss':'cell-usd'}">${fU(net)}</td></tr>`;}
 
-  // Missing warning
-  const warnEl = document.getElementById('missingWarning');
-  if (totalMissing > 0) {
-    warnEl.style.display = 'block';
-    document.getElementById('missingText').textContent =
-      `${miss.trades||0} trades, ${miss.deposits||0} deposits, and ${miss.withdrawals||0} withdrawals are missing USD values. Run a backfill to resolve them using CoinGecko historical prices.`;
-  } else {
-    warnEl.style.display = 'none';
-  }
-}
+// ── Form 8949 ────────────────────────────────────────────
+async function loadForm8949(){const yr=document.getElementById('f8949Year').value;const d=await api('/tax/form-8949?year='+yr);if(!d)return;
+const lines=d.lines||[];const st=lines.filter(l=>l.term==='short'),lt=lines.filter(l=>l.term==='long');
+const stTotal=st.reduce((a,l)=>a+parseFloat(l.gain_loss||0),0),ltTotal=lt.reduce((a,l)=>a+parseFloat(l.gain_loss||0),0);
+document.getElementById('f8949Stats').innerHTML=`
+<div class="stat-card"><div class="stat-label">Total Disposals</div><div class="stat-value">${d.total_lines||0}</div></div>
+<div class="stat-card"><div class="stat-label">Short-Term Net</div><div class="stat-value ${stTotal<0?'loss':'usd'}">${Math.abs(stTotal).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Long-Term Net</div><div class="stat-value ${ltTotal<0?'loss':'usd'}">${Math.abs(ltTotal).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Net Total</div><div class="stat-value ${(stTotal+ltTotal)<0?'loss':'usd'}">${Math.abs(stTotal+ltTotal).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>`;
+document.getElementById('f8949STCount').textContent=st.length+' lines';document.getElementById('f8949LTCount').textContent=lt.length+' lines';
+function renderLines(arr,tbodyId){let rows='';arr.forEach(l=>{rows+=`<tr><td>${l.description||''}</td><td class="cell-dim">${l.date_acquired||''}</td><td class="cell-dim">${l.date_sold||''}</td><td class="cell-usd">${fU(l.proceeds)}</td><td class="cell-usd">${fU(l.cost_basis)}</td><td class="${glClass(l.gain_loss)}">${fU(l.gain_loss)}</td><td>${l.holding_days||0}</td></tr>`;});
+document.getElementById(tbodyId).innerHTML=rows||'<tr><td colspan="7" class="cell-dim">None</td></tr>';}
+renderLines(st,'f8949STTable');renderLines(lt,'f8949LTTable');}
 
-// ── Sync page ────────────────────────────────────────────
-async function syncAll(full) {
-  const label = full ? 'full re-sync' : 'incremental sync';
-  if (full && !confirm('Full re-sync will re-pull ALL history from every exchange. Continue?')) return;
-  const data = await api('/sync?full=' + full, 'POST');
-  if (data) {
-    logToConsole('backfillConsole', `Started ${label} for all exchanges`, 'info');
-    document.getElementById('healthDot').className = 'status-dot syncing';
-    setTimeout(refreshSyncStatus, 3000);
-  }
-}
+// ── Income ───────────────────────────────────────────────
+async function loadIncome(){const yr=document.getElementById('incomeYear').value;const d=await api('/tax/income?year='+yr);if(!d)return;
+const total=parseFloat(d.total_income_usd||0);
+document.getElementById('incomeStats').innerHTML=`
+<div class="stat-card"><div class="stat-label">Income Events</div><div class="stat-value">${d.total_income_events||0}</div></div>
+<div class="stat-card"><div class="stat-label">Total Ordinary Income</div><div class="stat-value usd">${total.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>`;
+const evts=d.events||[];let rows='';evts.forEach(e=>{rows+=`<tr><td class="cell-dim">${fD(e.received_at)}</td><td>${(e.income_type||'').replace(/_/g,' ')}</td><td style="font-weight:600">${e.asset}</td><td>${fC(e.amount)}</td><td class="cell-usd">${fU(e.amount_usd)}</td><td>${(e.exchange||'').toUpperCase()}</td></tr>`;});
+document.getElementById('incomeTable').innerHTML=rows||'<tr><td colspan="6" class="cell-dim">No income events found. Run Tax Pipeline step 2 first.</td></tr>';}
 
-async function refreshSyncStatus() {
-  const data = await api('/sync/status');
-  if (!data) return;
+// ── Transfers ────────────────────────────────────────────
+async function loadTransfers(){const d=await api('/tax/unmatched-transfers');if(!d)return;
+// Also load matched
+const el=document.getElementById('transferTable');
+// Try to get matches from the DB via schedule-d or similar... we'll query unmatched
+const uw=d.unmatched_withdrawals||[],ud=d.unmatched_deposits||[];
+document.getElementById('tmCount').textContent=`${uw.length} unmatched wd, ${ud.length} unmatched dep`;
+el.innerHTML='<tr><td colspan="7" class="cell-dim">Run Tax Pipeline step 1 to see matched transfers here. Currently showing unmatched only.</td></tr>';
+if(uw.length||ud.length){document.getElementById('unmatchedCard').style.display='block';
+let html='<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px"><strong>Unmatched Withdrawals:</strong> '+uw.length+' | <strong>Unmatched Deposits:</strong> '+ud.length+'</p>';
+if(uw.length){html+='<div class="table-wrap" style="margin-bottom:10px"><table><thead><tr><th>Date</th><th>Exchange</th><th>Asset</th><th>Amount</th></tr></thead><tbody>';uw.forEach(w=>{html+=`<tr><td class="cell-dim">${fD(w.confirmed_at)}</td><td>${(w.exchange||'').toUpperCase()}</td><td style="font-weight:600">${w.asset}</td><td>${fC(w.amount)}</td></tr>`;});html+='</tbody></table></div>';}
+if(ud.length){html+='<div class="table-wrap"><table><thead><tr><th>Date</th><th>Exchange</th><th>Asset</th><th>Amount</th></tr></thead><tbody>';ud.forEach(d=>{html+=`<tr><td class="cell-dim">${fD(d.confirmed_at)}</td><td>${(d.exchange||'').toUpperCase()}</td><td style="font-weight:600">${d.asset}</td><td>${fC(d.amount)}</td></tr>`;});html+='</tbody></table></div>';}
+document.getElementById('unmatchedContent').innerHTML=html;}}
 
-  const exchanges = Object.keys(data);
-  if (exchanges.length === 0) {
-    document.getElementById('syncTable').innerHTML = '<tr><td colspan="8" class="cell-dim">No syncs yet</td></tr>';
-    return;
-  }
+async function loadUnmatched(){await loadTransfers();}
 
-  let rows = '';
-  let anySyncing = false;
-  exchanges.forEach(ex => {
-    const s = data[ex];
-    if (s.status === 'running') anySyncing = true;
-    rows += `<tr>
-      <td style="text-transform:uppercase; font-weight:600;">${ex}</td>
-      <td>${badge(s.status)}</td>
-      <td>${s.trades ?? '—'}</td>
-      <td>${s.orders ?? '—'}</td>
-      <td>${s.deposits ?? '—'}</td>
-      <td>${s.withdrawals ?? '—'}</td>
-      <td>${s.pools ?? '—'}</td>
-      <td class="cell-dim">${s.finished ? fmtDate(s.finished) : (s.started ? 'running...' : '—')}</td>
-    </tr>`;
-  });
-  document.getElementById('syncTable').innerHTML = rows;
+// ── Lots ─────────────────────────────────────────────────
+async function loadLots(){const asset=document.getElementById('lotAsset').value.trim();let url='/tax/lots';if(asset)url+='?asset='+asset.toUpperCase();
+const d=await api(url);if(!d)return;document.getElementById('lotCount').textContent=(d.count||0)+' lots';
+const lots=d.lots||[];let rows='';lots.forEach(l=>{rows+=`<tr><td style="font-weight:600">${l.asset}</td><td class="cell-dim">${fD(l.acquired_at)}</td><td>${(l.source||'').replace(/_/g,' ')}</td><td>${(l.exchange||'').toUpperCase()}</td><td>${fC(l.quantity)}</td><td>${fC(l.remaining)}</td><td class="cell-usd">${fU(l.cost_per_unit_usd)}</td><td class="cell-usd">${fU(l.total_cost_usd)}</td></tr>`;});
+document.getElementById('lotsTable').innerHTML=rows||'<tr><td colspan="8" class="cell-dim">No lots found. Run Tax Pipeline step 3 first.</td></tr>';}
 
-  const dot = document.getElementById('healthDot');
-  if (anySyncing) {
-    dot.className = 'status-dot syncing';
-    setTimeout(refreshSyncStatus, 5000);
-  } else {
-    dot.className = 'status-dot online';
-  }
-}
-
-// ── Backfill ─────────────────────────────────────────────
-async function runBackfill() {
-  const batch = document.getElementById('backfillBatch')?.value || 50;
-  const data = await api('/backfill-usd?batch_size=' + batch, 'POST');
-  if (data) {
-    logToConsole('backfillConsole', 'Backfill started (batch=' + batch + ')...', 'info');
-    setTimeout(refreshBackfillStatus, 5000);
-  }
-}
-
-async function refreshBackfillStatus() {
-  const data = await api('/backfill-usd/status');
-  if (!data) return;
-  const el = document.getElementById('backfillConsole');
-  if (data.status === 'running') {
-    logToConsole('backfillConsole', 'Backfill running...', 'warn');
-    setTimeout(refreshBackfillStatus, 5000);
-  } else if (data.status === 'success') {
-    const f = data.filled || {};
-    logToConsole('backfillConsole',
-      `Backfill complete: ${f.trades||0} trades, ${f.deposits||0} deposits, ${f.withdrawals||0} withdrawals resolved`, 'ok');
-  } else if (data.status === 'error') {
-    logToConsole('backfillConsole', 'Backfill error: ' + (data.error || 'unknown'), 'err');
-  }
-}
-
-function logToConsole(id, msg, type) {
-  const el = document.getElementById(id);
-  const ts = new Date().toISOString().substring(11, 19);
-  const cls = type === 'ok' ? 'log-ok' : type === 'err' ? 'log-err' : type === 'warn' ? 'log-warn' : 'log-info';
-  el.innerHTML += `<div><span class="log-ts">[${ts}]</span> <span class="${cls}">${msg}</span></div>`;
-  el.scrollTop = el.scrollHeight;
-}
-
-// ── Trades page ──────────────────────────────────────────
-async function loadTrades() {
-  const ex = document.getElementById('tradeExchange').value;
-  const year = document.getElementById('tradeYear').value;
-  const limit = document.getElementById('tradeLimit').value || 50;
-  let url = `/trades/${ex}?limit=${limit}`;
-  if (year) url += `&year=${year}`;
-  const data = await api(url);
-  if (!data) return;
-
-  document.getElementById('tradeCount').textContent = data.count + ' loaded';
-  const trades = data.trades || [];
-  if (trades.length === 0) {
-    document.getElementById('tradesTable').innerHTML = '<tr><td colspan="10" class="cell-dim">No trades found</td></tr>';
-    return;
-  }
-
-  let rows = '';
-  trades.forEach(t => {
-    const sideClass = t.side === 'buy' ? 'cell-buy' : 'cell-sell';
-    rows += `<tr>
-      <td class="cell-dim">${fmtDate(t.executed_at)}</td>
-      <td style="font-weight:600;">${t.market}</td>
-      <td class="${sideClass}" style="text-transform:uppercase;font-weight:600;">${t.side}</td>
-      <td>${fmtCrypto(t.price)}</td>
-      <td>${fmtCrypto(t.quantity)}</td>
-      <td>${fmtCrypto(t.total)}</td>
-      <td>${fmtCrypto(t.fee)}</td>
-      <td class="cell-usd">${fmtUsd(t.total_usd)}</td>
-      <td class="cell-usd">${fmtUsd(t.fee_usd)}</td>
-      <td class="cell-dim">${fmtUsd(t.base_price_usd)}</td>
-    </tr>`;
-  });
-  document.getElementById('tradesTable').innerHTML = rows;
-}
-
-// ── Export page ──────────────────────────────────────────
-function downloadReport(e) {
-  const year = document.getElementById('exportYear').value;
-  let url = API + '/export/xlsx';
-  if (year) url += '?year=' + year;
-  window.open(url, '_blank');
-}
-
-// ── Prices page ──────────────────────────────────────────
-async function loadPriceStats() {
-  const data = await api('/prices/stats');
-  if (!data) return;
-
-  document.getElementById('priceStats').innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">Cached Prices</div>
-      <div class="stat-value">${(data.total_cached_prices||0).toLocaleString()}</div>
-      <div class="stat-sub">asset-day pairs</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Unique Assets</div>
-      <div class="stat-value">${data.unique_assets||0}</div>
-    </div>
-  `;
-
-  const assets = data.top_assets || [];
-  if (assets.length === 0) {
-    document.getElementById('priceTable').innerHTML = '<tr><td colspan="4" class="cell-dim">No prices cached yet</td></tr>';
-    return;
-  }
-  let rows = '';
-  assets.forEach(a => {
-    rows += `<tr>
-      <td style="font-weight:600;">${a.asset}</td>
-      <td>${a.cached_days}</td>
-      <td class="cell-dim">${a.earliest}</td>
-      <td class="cell-dim">${a.latest}</td>
-    </tr>`;
-  });
-  document.getElementById('priceTable').innerHTML = rows;
-}
+// ── Fees ─────────────────────────────────────────────────
+async function loadFees(){const yr=document.getElementById('feeYear').value;const d=await api('/tax/fee-summary'+(yr?'?year='+yr:''));if(!d)return;
+const total=parseFloat(d.total_deductible_fees_usd||0);
+document.getElementById('feeStats').innerHTML=`<div class="stat-card"><div class="stat-label">Total Deductible Fees</div><div class="stat-value usd">${total.toLocaleString('en-US',{maximumFractionDigits:2})}</div><div class="stat-sub">${d.year||'all years'}</div></div>`;
+const rows_data=d.by_exchange||[];let rows='';rows_data.forEach(r=>{rows+=`<tr><td style="text-transform:uppercase;font-weight:600">${r.exchange}</td><td>${r.trade_count}</td><td class="cell-usd">${fU(r.total_fees_usd)}</td></tr>`;});
+document.getElementById('feeTable').innerHTML=rows||'<tr><td colspan="3" class="cell-dim">No fee data</td></tr>';}
 
 // ── Init ─────────────────────────────────────────────────
-checkHealth();
-loadOverview();
-setInterval(checkHealth, 30000);
+checkHealth();loadOverview();setInterval(checkHealth,30000);
 </script>
 </body>
 </html>
