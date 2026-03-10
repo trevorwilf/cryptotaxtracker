@@ -107,5 +107,5 @@ CLAUDE.md
 .agents/
 
 # Tax Collector exports
-exports/
+# exports/
 app/exports/*.xlsx
