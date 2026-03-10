@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
+.env
+*.md
+*.zip
+compose_snippet.yaml
+Build_tax_collector.sh
+LICENSE
