@@ -109,3 +109,5 @@ CLAUDE.md
 # Tax Collector exports
 # exports/
 app/exports/*.xlsx
+
+.venv/

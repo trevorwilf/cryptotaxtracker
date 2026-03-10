@@ -1,0 +1,28 @@
+version: "3.8"
+
+# =============================================================================
+# Test infrastructure for Tax Collector
+#
+# Usage:
+#   docker compose -f docker-compose.test.yaml up -d    # start test DB
+#   ./run_tests.sh                                       # run all tests
+#   docker compose -f docker-compose.test.yaml down -v   # cleanup
+# =============================================================================
+
+services:
+  test-postgres:
+    image: postgres:16
+    container_name: tax-collector-test-db
+    environment:
+      - POSTGRES_DB=test_tax
+      - POSTGRES_USER=test
+      - POSTGRES_PASSWORD=test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d test_tax"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data  # RAM-backed for speed

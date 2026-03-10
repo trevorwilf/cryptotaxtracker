@@ -14,16 +14,17 @@ from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 
 from config import Settings
 from database import Database
 from exchanges import get_exchange, list_exchanges
 from exports.xlsx_export import generate_tax_xlsx
 from price_oracle import PriceOracle
+from tax_engine import TaxEngine
+from transfer_matcher import TransferMatcher
+from income_classifier import IncomeClassifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +36,9 @@ logger = logging.getLogger("tax-collector")
 settings = Settings()
 db = Database(settings.database_url)
 oracle = PriceOracle()
+tax_engine = TaxEngine()
+transfer_matcher = TransferMatcher()
+income_classifier = IncomeClassifier()
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 sync_status: dict[str, dict] = {}
@@ -278,20 +282,6 @@ app = FastAPI(
 )
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────
-
-STATIC_DIR = Path(__file__).parent / "static"
-
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    """Serve the Tax Collector web dashboard."""
-    html_path = STATIC_DIR / "index.html"
-    if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(), status_code=200)
-    return HTMLResponse(content="<h1>Dashboard not found</h1><p>static/index.html missing</p>", status_code=404)
-
-
 # ── Health ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -398,3 +388,219 @@ async def price_stats():
         "unique_assets": unique_assets,
         "top_assets": assets,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TAX COMPUTATION ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+tax_compute_status: dict = {"status": "idle"}
+
+
+@app.post("/tax/match-transfers")
+async def match_transfers():
+    """Step 1: Match cross-exchange withdrawal→deposit pairs as non-taxable transfers."""
+    async with db.get_session() as session:
+        result = await transfer_matcher.match_transfers(session)
+    return result
+
+
+@app.get("/tax/unmatched-transfers")
+async def get_unmatched():
+    """View withdrawals/deposits that weren't matched as transfers."""
+    async with db.get_session() as session:
+        return await transfer_matcher.get_unmatched(session)
+
+
+@app.post("/tax/classify-income")
+async def classify_income():
+    """Step 2: Identify staking rewards, airdrops, and other ordinary income."""
+    async with db.get_session() as session:
+        result = await income_classifier.classify(session)
+    return result
+
+
+@app.get("/tax/income")
+async def get_income(year: int = Query(None)):
+    """Get income schedule (staking rewards, airdrops, etc.)."""
+    async with db.get_session() as session:
+        return await income_classifier.get_income_summary(session, year=year)
+
+
+@app.post("/tax/compute")
+async def compute_taxes(year: int = Query(None)):
+    """Step 3: Run FIFO cost basis computation and generate Form 8949.
+    
+    Recommended order:
+      1. POST /tax/match-transfers
+      2. POST /tax/classify-income
+      3. POST /tax/compute?year=2025
+    """
+    global tax_compute_status
+    tax_compute_status = {"status": "running", "started": datetime.now(timezone.utc).isoformat()}
+    try:
+        async with db.get_session() as session:
+            result = await tax_engine.compute(session, year=year)
+        tax_compute_status = {"status": "success", **result}
+        return result
+    except Exception as e:
+        logger.exception(f"Tax computation failed: {e}")
+        tax_compute_status = {"status": "error", "error": str(e)}
+        raise HTTPException(500, f"Tax computation failed: {str(e)}")
+
+
+@app.post("/tax/compute-all")
+async def compute_all(year: int = Query(None)):
+    """Run the full tax pipeline: transfers → income → FIFO → Form 8949."""
+    results = {}
+    async with db.get_session() as session:
+        results["transfers"] = await transfer_matcher.match_transfers(session)
+    async with db.get_session() as session:
+        results["income"] = await income_classifier.classify(session)
+    async with db.get_session() as session:
+        results["tax"] = await tax_engine.compute(session, year=year)
+    return results
+
+
+@app.get("/tax/compute/status")
+async def get_tax_status():
+    return tax_compute_status
+
+
+@app.get("/tax/form-8949")
+async def get_form_8949(year: int = Query(..., description="Tax year (required)")):
+    """Get Form 8949 data — one line per disposal."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        result = await session.execute(t("""
+            SELECT description, date_acquired, date_sold, proceeds::text,
+                   cost_basis::text, adjustment_code, adjustment_amount::text,
+                   gain_loss::text, term, box, asset, exchange, holding_days,
+                   is_futures
+            FROM tax.form_8949
+            WHERE tax_year = :year
+            ORDER BY date_sold, asset
+        """), {"year": year})
+        lines = [dict(zip(result.keys(), row)) for row in result.fetchall()]
+
+    # Compute totals
+    from decimal import Decimal as D
+    st_total = sum(D(l["gain_loss"] or "0") for l in lines if l["term"] == "short")
+    lt_total = sum(D(l["gain_loss"] or "0") for l in lines if l["term"] == "long")
+
+    return {
+        "year": year,
+        "total_lines": len(lines),
+        "short_term_net": str(st_total),
+        "long_term_net": str(lt_total),
+        "net_total": str(st_total + lt_total),
+        "lines": lines,
+    }
+
+
+@app.get("/tax/schedule-d")
+async def get_schedule_d(year: int = Query(...)):
+    """Schedule D summary — aggregated short-term and long-term totals."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+
+        r = await session.execute(t("""
+            SELECT
+                COALESCE(SUM(CASE WHEN term='short' THEN proceeds END), 0)::text AS st_proceeds,
+                COALESCE(SUM(CASE WHEN term='short' THEN cost_basis END), 0)::text AS st_cost,
+                COALESCE(SUM(CASE WHEN term='short' THEN gain_loss END), 0)::text AS st_gain_loss,
+                COALESCE(SUM(CASE WHEN term='long' THEN proceeds END), 0)::text AS lt_proceeds,
+                COALESCE(SUM(CASE WHEN term='long' THEN cost_basis END), 0)::text AS lt_cost,
+                COALESCE(SUM(CASE WHEN term='long' THEN gain_loss END), 0)::text AS lt_gain_loss,
+                COUNT(*) AS total_disposals
+            FROM tax.form_8949
+            WHERE tax_year = :year
+        """), {"year": year})
+        row = r.fetchone()
+
+    return {
+        "year": year,
+        "short_term": {
+            "proceeds": row[0], "cost_basis": row[1], "gain_loss": row[2]
+        },
+        "long_term": {
+            "proceeds": row[3], "cost_basis": row[4], "gain_loss": row[5]
+        },
+        "net_gain_loss": str(
+            (D(row[2]) + D(row[5])) if row else D("0")
+        ),
+        "total_disposals": row[6] if row else 0,
+    }
+
+
+@app.get("/tax/fee-summary")
+async def get_fee_summary(year: int = Query(None)):
+    """Total deductible trading fees by exchange and year."""
+    yf = ""
+    params: dict = {}
+    if year:
+        yf = "AND EXTRACT(YEAR FROM executed_at) = :year"
+        params["year"] = year
+
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"""
+            SELECT exchange,
+                   COUNT(*) AS trade_count,
+                   COALESCE(SUM(fee_usd), 0)::text AS total_fees_usd
+            FROM tax.trades
+            WHERE fee_usd > 0 {yf}
+            GROUP BY exchange
+            ORDER BY exchange
+        """), params)
+        rows = [{"exchange": row[0], "trade_count": row[1], "total_fees_usd": row[2]}
+                for row in r.fetchall()]
+
+        total = sum(D(row["total_fees_usd"]) for row in rows)
+
+    return {
+        "year": year or "all",
+        "by_exchange": rows,
+        "total_deductible_fees_usd": str(total),
+    }
+
+
+@app.get("/tax/lots")
+async def get_lots(asset: str = Query(None), show_depleted: bool = Query(False)):
+    """View acquisition lots. Filter by asset, optionally show fully depleted lots."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        where = "WHERE 1=1"
+        params: dict = {}
+        if asset:
+            where += " AND asset = :asset"
+            params["asset"] = asset.upper()
+        if not show_depleted:
+            where += " AND remaining > 0"
+
+        r = await session.execute(t(f"""
+            SELECT asset, quantity::text, remaining::text, cost_per_unit_usd::text,
+                   total_cost_usd::text, acquired_at, exchange, source
+            FROM tax.lots {where}
+            ORDER BY asset, acquired_at
+        """), params)
+        lots = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+
+    return {"count": len(lots), "lots": lots}
+
+
+@app.get("/export/tax-report")
+async def export_tax_report(year: int = Query(..., description="Tax year (required)")):
+    """Generate the full accountant-ready tax report XLSX."""
+    try:
+        async with db.get_session() as session:
+            from exports.tax_report import generate_full_tax_report
+            filepath = await generate_full_tax_report(session, year=year)
+        return FileResponse(
+            filepath,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=os.path.basename(filepath),
+        )
+    except Exception as e:
+        logger.exception(f"Tax report export failed: {e}")
+        raise HTTPException(500, f"Export failed: {str(e)}")

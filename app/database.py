@@ -202,7 +202,15 @@ class Database:
                 stmt = statement.strip()
                 if stmt:
                     await conn.execute(text(stmt))
-        logger.info("Tax schema ready (with USD columns + price cache)")
+
+            # v3: tax computation tables (lots, disposals, form_8949, etc.)
+            from schema_v3 import SCHEMA_V3_SQL
+            for statement in SCHEMA_V3_SQL.split(";"):
+                stmt = statement.strip()
+                if stmt:
+                    await conn.execute(text(stmt))
+
+        logger.info("Tax schema ready (v3 — includes lots, disposals, form_8949)")
 
     async def close(self):
         await self.engine.dispose()

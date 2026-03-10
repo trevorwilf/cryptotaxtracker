@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install app deps
+COPY app/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install test deps
+COPY requirements-test.txt /tmp/requirements-test.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-test.txt
+
+# Copy app code
+COPY app/ /app/
+
+# Copy test code
+COPY tests/ /app/tests/
+COPY pytest.ini /app/pytest.ini
+
+ENV PYTHONPATH=/app
+
+# Default: run unit tests
+CMD ["python", "-m", "pytest", "tests/", "-v", "--tb=short", "-m", "not integration"]
