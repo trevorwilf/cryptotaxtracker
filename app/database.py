@@ -254,7 +254,7 @@ class Database:
                          :price, :quantity, :total, :fee, :fee_asset,
                          :price_usd, :quantity_usd, :total_usd, :fee_usd,
                          :base_price_usd, :quote_price_usd,
-                         :executed_at, :raw_data::jsonb)
+                         :executed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         price = EXCLUDED.price, quantity = EXCLUDED.quantity,
                         total = EXCLUDED.total, fee = EXCLUDED.fee,
@@ -286,7 +286,7 @@ class Database:
                         (:exchange, :exchange_id, :market, :base_asset, :quote_asset, :side,
                          :order_type, :price, :quantity, :executed_qty, :status,
                          :price_usd, :total_usd, :fee_usd,
-                         :created_at_ex, :updated_at_ex, :raw_data::jsonb)
+                         :created_at_ex, :updated_at_ex, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         executed_qty = EXCLUDED.executed_qty, status = EXCLUDED.status,
                         price_usd = COALESCE(EXCLUDED.price_usd, tax.orders.price_usd),
@@ -311,7 +311,7 @@ class Database:
                          asset_price_usd, amount_usd, confirmed_at, raw_data)
                     VALUES
                         (:exchange, :exchange_id, :asset, :amount, :network, :tx_hash, :address, :status,
-                         :asset_price_usd, :amount_usd, :confirmed_at, :raw_data::jsonb)
+                         :asset_price_usd, :amount_usd, :confirmed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         asset_price_usd = COALESCE(EXCLUDED.asset_price_usd, tax.deposits.asset_price_usd),
@@ -334,7 +334,7 @@ class Database:
                          asset_price_usd, amount_usd, fee_usd, confirmed_at, raw_data)
                     VALUES
                         (:exchange, :exchange_id, :asset, :amount, :fee, :network, :tx_hash, :address, :status,
-                         :asset_price_usd, :amount_usd, :fee_usd, :confirmed_at, :raw_data::jsonb)
+                         :asset_price_usd, :amount_usd, :fee_usd, :confirmed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         asset_price_usd = COALESCE(EXCLUDED.asset_price_usd, tax.withdrawals.asset_price_usd),
@@ -360,7 +360,7 @@ class Database:
                     VALUES
                         (:exchange, :exchange_id, :pool_name, :action, :asset_in, :amount_in,
                          :asset_out, :amount_out, :fee, :fee_asset,
-                         :amount_in_usd, :amount_out_usd, :fee_usd, :executed_at, :raw_data::jsonb)
+                         :amount_in_usd, :amount_out_usd, :fee_usd, :executed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         amount_in_usd = COALESCE(EXCLUDED.amount_in_usd, tax.pool_activity.amount_in_usd),
                         amount_out_usd = COALESCE(EXCLUDED.amount_out_usd, tax.pool_activity.amount_out_usd),
