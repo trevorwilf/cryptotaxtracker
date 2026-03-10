@@ -1,0 +1,56 @@
+# =============================================================================
+# TAX COLLECTOR — add this block to hummingbot_App.yaml under `services:`
+#
+# Also add to Gluetun's FIREWALL_INPUT_PORTS:
+#   - FIREWALL_INPUT_PORTS=8501,8080,15888,18083,8100
+#
+# And add these to your .env file:
+#   NONKYC_API_KEY=<your NonKYC API key>
+#   NONKYC_API_SECRET=<your NonKYC API secret>
+#   MEXC_API_KEY=<your MEXC API key>
+#   MEXC_API_SECRET=<your MEXC API secret>
+#   TAX_SYNC_CRON=0 3 * * *
+# =============================================================================
+
+  tax-collector:
+    image: tax-collector:latest
+    container_name: hummingbot-tax-collector
+    network_mode: "service:gluetun"
+    depends_on:
+      wait-for-vpn:
+        condition: service_completed_successfully
+      gluetun:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - TZ=Europe/Tirane
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - TAX_DATABASE_URL=postgresql+asyncpg://hbot:${POSTGRES_PASSWORD}@127.0.0.1:5432/hummingbot_api
+      - TAX_EXCHANGES=nonkyc,mexc
+      - TAX_SYNC_CRON=${TAX_SYNC_CRON:-0 3 * * *}
+      - TAX_EXPORT_DIR=/app/exports
+      # NonKYC credentials
+      - NONKYC_API_KEY=${NONKYC_API_KEY}
+      - NONKYC_API_SECRET=${NONKYC_API_SECRET}
+      # MEXC credentials
+      - MEXC_API_KEY=${MEXC_API_KEY}
+      - MEXC_API_SECRET=${MEXC_API_SECRET}
+    volumes:
+      - /mnt/sharedrive/apps/hummingbot/tax-collector/exports:/app/exports
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.create_connection(('127.0.0.1',8100),2); s.close()"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    labels:
+      autoheal: "true"
+    logging: *default-logging
