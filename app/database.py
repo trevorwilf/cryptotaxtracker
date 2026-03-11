@@ -210,7 +210,36 @@ class Database:
                 if stmt:
                     await conn.execute(text(stmt))
 
-        logger.info("Tax schema ready (v3 — includes lots, disposals, form_8949)")
+            # v4: filing-grade tax computation tables
+            from schema_v4 import SCHEMA_V4_SQL
+            for statement in SCHEMA_V4_SQL.split(";"):
+                stmt = statement.strip()
+                if stmt:
+                    await conn.execute(text(stmt))
+
+            # Salvium staking tracker table
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS tax.salvium_stakes (
+                    id              SERIAL PRIMARY KEY,
+                    lock_tx_hash    VARCHAR(200),
+                    lock_amount     NUMERIC(36,18) NOT NULL,
+                    lock_height     INTEGER,
+                    lock_at         TIMESTAMPTZ NOT NULL,
+                    unlock_tx_hash  VARCHAR(200),
+                    unlock_amount   NUMERIC(36,18),
+                    unlock_height   INTEGER,
+                    unlock_at       TIMESTAMPTZ,
+                    yield_amount    NUMERIC(36,18),
+                    yield_usd       NUMERIC(36,18),
+                    sal_price_usd   NUMERIC(36,18),
+                    status          VARCHAR(20) DEFAULT 'locked',
+                    income_event_id INTEGER,
+                    created_at      TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(lock_tx_hash)
+                )
+            """))
+
+        logger.info("Tax schema ready (v4 — filing-grade with normalized events, wallet-aware lots, salvium staking)")
 
     async def close(self):
         await self.engine.dispose()

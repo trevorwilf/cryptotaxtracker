@@ -7,6 +7,7 @@ configured exchanges, resolves USD values via CoinGecko + NonKYC,
 and stores everything in PostgreSQL (tax schema).
 """
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -621,4 +622,514 @@ async def export_tax_report(year: int = Query(..., description="Tax year (requir
         )
     except Exception as e:
         logger.exception(f"Tax report export failed: {e}")
+        raise HTTPException(500, f"Export failed: {str(e)}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V4 — FILING-GRADE TAX COMPUTATION ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+from exceptions import ExceptionManager
+from ledger import NormalizedLedger
+from valuation_v4 import ValuationV4
+from transfer_matcher_v4 import TransferMatcherV4
+from income_classifier_v4 import IncomeClassifierV4
+from tax_engine_v4 import TaxEngineV4
+
+
+async def _create_run_manifest(session, run_type: str, tax_year: int = None,
+                               config_snapshot: dict = None) -> int:
+    """Create a run_manifest record and return its ID."""
+    from sqlalchemy import text as t
+    r = await session.execute(t("""
+        INSERT INTO tax.run_manifest
+            (run_type, tax_year, basis_method, wallet_aware, code_version, config_snapshot)
+        VALUES
+            (:rt, :ty, 'FIFO', TRUE, '4.0.0', CAST(:cfg AS jsonb))
+        RETURNING id
+    """), {"rt": run_type, "ty": tax_year,
+           "cfg": json.dumps(config_snapshot) if config_snapshot else None})
+    row = r.fetchone()
+    return row[0] if row else 0
+
+
+async def _update_run_manifest(session, run_id: int, status: str,
+                               stats: dict = None, error: str = None):
+    """Update a run_manifest with final status."""
+    from sqlalchemy import text as t
+    await session.execute(t("""
+        UPDATE tax.run_manifest SET
+            completed_at = NOW(), status = :status,
+            total_events = :te, total_disposals = :td,
+            total_exceptions = :tex, blocking_exceptions = :be,
+            filing_ready = :fr, error_message = :err
+        WHERE id = :id
+    """), {
+        "id": run_id, "status": status,
+        "te": stats.get("total_events") if stats else None,
+        "td": stats.get("total_disposals") if stats else None,
+        "tex": stats.get("total_exceptions") if stats else None,
+        "be": stats.get("blocking_exceptions") if stats else None,
+        "fr": stats.get("filing_ready", False) if stats else False,
+        "err": error,
+    })
+
+
+@app.post("/v4/compute-all")
+async def v4_compute_all(year: int = Query(2025)):
+    """Full v4 pipeline: normalize -> match transfers -> classify income -> FIFO -> Form 8949."""
+    try:
+        async with db.get_session() as session:
+            run_id = await _create_run_manifest(session, "full", year)
+            await session.commit()
+
+        results = {}
+        exc = ExceptionManager()
+
+        # Step 1: Normalize
+        async with db.get_session() as session:
+            ledger = NormalizedLedger(exc)
+            results["normalize"] = await ledger.decompose_all(session, run_id)
+            await session.commit()
+
+        # Step 2: Match transfers
+        async with db.get_session() as session:
+            matcher = TransferMatcherV4()
+            results["transfers"] = await matcher.match_and_relocate(session, exc, run_id)
+            await session.commit()
+
+        # Step 3: Classify income
+        async with db.get_session() as session:
+            val = ValuationV4(exc)
+            classifier = IncomeClassifierV4(exc, val)
+            results["income"] = await classifier.classify(session, run_id)
+            await session.commit()
+
+        # Step 4: FIFO computation
+        async with db.get_session() as session:
+            val = ValuationV4(exc)
+            engine = TaxEngineV4(exc, val)
+            results["compute"] = await engine.compute(session, run_id, year=year)
+            await session.commit()
+
+        # Flush exceptions
+        async with db.get_session() as session:
+            exc_count = await exc.flush(session)
+            filing_status = await ExceptionManager.check_filing_ready(session, year)
+            await session.commit()
+
+        # Update manifest
+        async with db.get_session() as session:
+            counts = exc.get_counts()
+            await _update_run_manifest(session, run_id,
+                status="completed" if filing_status["filing_ready"] else "filing_blocked",
+                stats={
+                    "total_events": results["normalize"].get("events_created", 0),
+                    "total_disposals": results["compute"].get("disposals_processed", 0),
+                    "total_exceptions": exc_count,
+                    "blocking_exceptions": filing_status.get("blocking_count", 0),
+                    "filing_ready": filing_status["filing_ready"],
+                })
+            await session.commit()
+
+        results["run_id"] = run_id
+        results["exceptions_logged"] = exc_count
+        results["filing_status"] = filing_status
+        return results
+
+    except Exception as e:
+        logger.exception(f"v4 compute-all failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/v4/normalize")
+async def v4_normalize():
+    """Step 1: Decompose raw data into normalized events."""
+    try:
+        exc = ExceptionManager()
+        async with db.get_session() as session:
+            run_id = await _create_run_manifest(session, "normalize")
+            await session.commit()
+        async with db.get_session() as session:
+            ledger = NormalizedLedger(exc)
+            result = await ledger.decompose_all(session, run_id)
+            await exc.flush(session)
+            await session.commit()
+        result["run_id"] = run_id
+        return result
+    except Exception as e:
+        logger.exception(f"v4 normalize failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/v4/match-transfers")
+async def v4_match_transfers(run_id: int = Query(None)):
+    """Step 2: Match transfers, relocate lots."""
+    if not run_id:
+        raise HTTPException(400, "run_id is required (from normalize step)")
+    try:
+        exc = ExceptionManager()
+        async with db.get_session() as session:
+            matcher = TransferMatcherV4()
+            result = await matcher.match_and_relocate(session, exc, run_id)
+            await exc.flush(session)
+            await session.commit()
+        return result
+    except Exception as e:
+        logger.exception(f"v4 match-transfers failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/v4/classify-income")
+async def v4_classify_income(run_id: int = Query(None)):
+    """Step 3: Queue income for review."""
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    try:
+        exc = ExceptionManager()
+        async with db.get_session() as session:
+            val = ValuationV4(exc)
+            classifier = IncomeClassifierV4(exc, val)
+            result = await classifier.classify(session, run_id)
+            await exc.flush(session)
+            await session.commit()
+        return result
+    except Exception as e:
+        logger.exception(f"v4 classify-income failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/v4/compute")
+async def v4_compute(year: int = Query(2025), run_id: int = Query(None)):
+    """Step 4: FIFO computation."""
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    try:
+        exc = ExceptionManager()
+        async with db.get_session() as session:
+            val = ValuationV4(exc)
+            engine = TaxEngineV4(exc, val)
+            result = await engine.compute(session, run_id, year=year)
+            await exc.flush(session)
+            await session.commit()
+        return result
+    except Exception as e:
+        logger.exception(f"v4 compute failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/v4/filing-status")
+async def v4_filing_status(year: int = Query(2025)):
+    """Check if filing-ready (any blocking exceptions?)."""
+    async with db.get_session() as session:
+        return await ExceptionManager.check_filing_ready(session, year)
+
+
+@app.get("/v4/exceptions")
+async def v4_exceptions(year: int = Query(None), severity: str = Query(None),
+                        status: str = Query("open")):
+    """List all exceptions."""
+    async with db.get_session() as session:
+        return await ExceptionManager.get_all(session, tax_year=year,
+                                               severity=severity, status=status)
+
+
+@app.post("/v4/exceptions/{exception_id}/resolve")
+async def v4_resolve_exception(exception_id: int,
+                               status: str = Query("resolved"),
+                               notes: str = Query("")):
+    """Resolve/accept-risk an exception."""
+    async with db.get_session() as session:
+        await ExceptionManager.resolve(session, exception_id, status, notes)
+        await session.commit()
+    return {"resolved": exception_id, "status": status}
+
+
+@app.get("/v4/events")
+async def v4_events(wallet: str = Query(None), asset: str = Query(None),
+                    event_type: str = Query(None),
+                    limit: int = Query(100, le=1000),
+                    offset: int = Query(0)):
+    """Browse normalized event ledger."""
+    where = ["1=1"]
+    params: dict = {"limit": limit, "offset": offset}
+    if wallet:
+        where.append("wallet = :wallet")
+        params["wallet"] = wallet
+    if asset:
+        where.append("asset = :asset")
+        params["asset"] = asset.upper()
+    if event_type:
+        where.append("event_type = :etype")
+        params["etype"] = event_type.upper()
+
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"""
+            SELECT id, event_type, wallet, asset, quantity::text,
+                   unit_price_usd::text, total_usd::text, event_at,
+                   paired_event_id, classification_rule,
+                   source_trade_id, source_deposit_id, source_withdrawal_id, source_pool_id
+            FROM tax.normalized_events
+            WHERE {' AND '.join(where)}
+            ORDER BY event_at ASC, id ASC
+            LIMIT :limit OFFSET :offset
+        """), params)
+        events = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return {"count": len(events), "events": events}
+
+
+@app.get("/v4/lots")
+async def v4_lots(wallet: str = Query(None), asset: str = Query(None),
+                  show_depleted: bool = Query(False)):
+    """Browse lots per wallet."""
+    where = ["1=1"]
+    params: dict = {}
+    if wallet:
+        where.append("wallet = :wallet")
+        params["wallet"] = wallet
+    if asset:
+        where.append("asset = :asset")
+        params["asset"] = asset.upper()
+    if not show_depleted:
+        where.append("remaining > 0")
+
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"""
+            SELECT id, asset, wallet, original_quantity::text, remaining::text,
+                   cost_per_unit_usd::text, total_cost_usd::text,
+                   original_acquired_at, lot_created_at, source_type,
+                   parent_lot_id, is_depleted
+            FROM tax.lots_v4
+            WHERE {' AND '.join(where)}
+            ORDER BY asset, original_acquired_at ASC, id ASC
+        """), params)
+        lots = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return {"count": len(lots), "lots": lots}
+
+
+@app.get("/v4/form-8949")
+async def v4_form_8949(year: int = Query(...)):
+    """Form 8949 from v4 engine."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        result = await session.execute(t("""
+            SELECT description, date_acquired, date_sold, proceeds::text,
+                   cost_basis::text, adjustment_code, adjustment_amount::text,
+                   gain_loss::text, term, box, asset, wallet, exchange,
+                   holding_days, is_futures
+            FROM tax.form_8949_v4
+            WHERE tax_year = :year
+            ORDER BY date_sold, asset
+        """), {"year": year})
+        lines = [dict(zip(result.keys(), row)) for row in result.fetchall()]
+
+    from decimal import Decimal as D
+    st_total = sum(D(l["gain_loss"] or "0") for l in lines if l["term"] == "short")
+    lt_total = sum(D(l["gain_loss"] or "0") for l in lines if l["term"] == "long")
+
+    return {
+        "year": year,
+        "total_lines": len(lines),
+        "short_term_net": str(st_total),
+        "long_term_net": str(lt_total),
+        "net_total": str(st_total + lt_total),
+        "lines": lines,
+    }
+
+
+@app.get("/v4/schedule-d")
+async def v4_schedule_d(year: int = Query(...)):
+    """Schedule D summary from v4 engine."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT
+                COALESCE(SUM(CASE WHEN term='short' THEN proceeds END), 0)::text,
+                COALESCE(SUM(CASE WHEN term='short' THEN cost_basis END), 0)::text,
+                COALESCE(SUM(CASE WHEN term='short' THEN gain_loss END), 0)::text,
+                COALESCE(SUM(CASE WHEN term='long' THEN proceeds END), 0)::text,
+                COALESCE(SUM(CASE WHEN term='long' THEN cost_basis END), 0)::text,
+                COALESCE(SUM(CASE WHEN term='long' THEN gain_loss END), 0)::text,
+                COUNT(*)
+            FROM tax.form_8949_v4
+            WHERE tax_year = :year
+        """), {"year": year})
+        row = r.fetchone()
+
+    from decimal import Decimal as D
+    return {
+        "year": year,
+        "short_term": {"proceeds": row[0], "cost_basis": row[1], "gain_loss": row[2]},
+        "long_term": {"proceeds": row[3], "cost_basis": row[4], "gain_loss": row[5]},
+        "net_gain_loss": str(D(row[2]) + D(row[5])) if row else "0",
+        "total_disposals": row[6] if row else 0,
+    }
+
+
+@app.get("/v4/income")
+async def v4_income(year: int = Query(None)):
+    """Income events with review status."""
+    where = "WHERE 1=1"
+    params: dict = {}
+    if year:
+        where += " AND EXTRACT(YEAR FROM dominion_at) = :year"
+        params["year"] = year
+
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"""
+            SELECT id, wallet, asset, quantity::text, fmv_per_unit_usd::text,
+                   total_fmv_usd::text, income_type, classification_source,
+                   review_status, dominion_at, reviewer_notes
+            FROM tax.income_events_v4
+            {where}
+            ORDER BY dominion_at ASC
+        """), params)
+        events = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+
+    from decimal import Decimal as D
+    total = sum(D(e["total_fmv_usd"] or "0") for e in events)
+    pending = sum(1 for e in events if e["review_status"] == "pending")
+    confirmed = sum(1 for e in events if e["review_status"] == "confirmed")
+
+    return {
+        "total_income_events": len(events),
+        "total_income_usd": str(total),
+        "pending_review": pending,
+        "confirmed": confirmed,
+        "events": events,
+    }
+
+
+@app.get("/v4/transfers")
+async def v4_transfers():
+    """Transfer carryover records."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT id, asset, quantity::text, source_wallet, dest_wallet,
+                   original_acquired_at, carryover_basis_usd::text,
+                   cost_per_unit_usd::text, transferred_at, tx_hash,
+                   transfer_fee::text, match_confidence
+            FROM tax.transfer_carryover
+            ORDER BY transferred_at DESC
+            LIMIT 200
+        """))
+        transfers = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return {"count": len(transfers), "transfers": transfers}
+
+
+@app.get("/v4/run-history")
+async def v4_run_history():
+    """Past computation runs."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT id, run_type, tax_year, basis_method, wallet_aware,
+                   code_version, started_at, completed_at, status,
+                   total_events, total_disposals, total_exceptions,
+                   blocking_exceptions, filing_ready, error_message
+            FROM tax.run_manifest
+            ORDER BY started_at DESC
+            LIMIT 50
+        """))
+        runs = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return {"count": len(runs), "runs": runs}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SALVIUM WALLET ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+from salvium_staking import SalviumStakingTracker
+
+salvium_staking = SalviumStakingTracker()
+
+
+@app.get("/salvium/status")
+async def salvium_status():
+    """Salvium wallet balance, sync height, staking summary."""
+    try:
+        status = {}
+        # Get staking DB summary
+        async with db.get_session() as session:
+            status = await salvium_staking.get_status(session)
+
+        # Try to get live wallet balance from the exchange plugin
+        try:
+            ex = get_exchange("salvium", settings)
+            if ex:
+                staking_summary = await ex.get_staking_summary()
+                status["wallet_balance_sal"] = staking_summary.get("wallet_balance_sal", "0")
+                status["unlocked_balance_sal"] = staking_summary.get("unlocked_balance_sal", "0")
+                status["wallet_connected"] = True
+            else:
+                status["wallet_connected"] = False
+        except Exception as e:
+            status["wallet_connected"] = False
+            status["wallet_error"] = str(e)
+
+        return status
+    except Exception as e:
+        logger.exception(f"Salvium status failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/salvium/stakes")
+async def salvium_stakes():
+    """List all staking lock/unlock pairs with yield."""
+    async with db.get_session() as session:
+        stakes = await salvium_staking.get_stakes(session)
+    return {"count": len(stakes), "stakes": stakes}
+
+
+@app.get("/salvium/income")
+async def salvium_income(year: int = Query(None)):
+    """Staking income for a tax year."""
+    async with db.get_session() as session:
+        events = await salvium_staking.get_income(session, year=year)
+
+    from decimal import Decimal as D
+    total = sum(D(e.get("total_fmv_usd") or "0") for e in events)
+    return {
+        "year": year or "all",
+        "total_income_events": len(events),
+        "total_staking_income_usd": str(total),
+        "events": events,
+    }
+
+
+@app.post("/salvium/sync")
+async def salvium_sync():
+    """Manual sync of Salvium wallet transactions + staking pair detection."""
+    try:
+        # Step 1: Sync wallet transactions via normal exchange sync
+        await run_sync("salvium", full=True)
+
+        # Step 2: Scan for staking lock/unlock pairs
+        async with db.get_session() as session:
+            result = await salvium_staking.scan_and_match(session)
+
+        return {"sync": "completed", "staking": result}
+    except Exception as e:
+        logger.exception(f"Salvium sync failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/export/v4-tax-report")
+async def export_v4_tax_report(year: int = Query(...)):
+    """Full accountant-ready XLSX from v4 engine."""
+    try:
+        async with db.get_session() as session:
+            from exports.tax_report import generate_full_tax_report
+            filepath = await generate_full_tax_report(session, year=year)
+        return FileResponse(
+            filepath,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=os.path.basename(filepath),
+        )
+    except Exception as e:
+        logger.exception(f"v4 tax report export failed: {e}")
         raise HTTPException(500, f"Export failed: {str(e)}")

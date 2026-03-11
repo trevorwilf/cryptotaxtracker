@@ -127,7 +127,7 @@
 
 <div class="header">
   <div class="header-inner">
-    <div class="logo"><div class="logo-icon">TC</div><div class="logo-text">Tax Collector <span>v3</span></div></div>
+    <div class="logo"><div class="logo-icon">TC</div><div class="logo-text">Tax Collector <span>v4</span></div></div>
     <div class="header-status"><div class="status-dot" id="healthDot"></div><span class="status-label" id="healthLabel">checking...</span></div>
   </div>
   <div class="nav-wrap">
@@ -146,6 +146,23 @@
       <button class="nav-btn" onclick="showPage('transfers',this)">Transfers</button>
       <button class="nav-btn" onclick="showPage('lots',this)">Lots</button>
       <button class="nav-btn" onclick="showPage('fees',this)">Fees</button>
+    </div>
+    <div class="nav-group">
+      <span class="nav-group-label">v4 Filing</span>
+      <button class="nav-btn" onclick="showPage('v4-pipeline',this)">Pipeline</button>
+      <button class="nav-btn" onclick="showPage('v4-events',this)">Events</button>
+      <button class="nav-btn" onclick="showPage('v4-exceptions',this)">Exceptions</button>
+      <button class="nav-btn" onclick="showPage('v4-form8949',this)">Form 8949</button>
+      <button class="nav-btn" onclick="showPage('v4-lots',this)">Lots</button>
+      <button class="nav-btn" onclick="showPage('v4-transfers',this)">Transfers</button>
+      <button class="nav-btn" onclick="showPage('v4-income',this)">Income</button>
+    </div>
+    <div class="nav-group">
+      <span class="nav-group-label">Salvium</span>
+      <button class="nav-btn" onclick="showPage('sal-overview',this)">Wallet</button>
+      <button class="nav-btn" onclick="showPage('sal-stakes',this)">Stakes</button>
+      <button class="nav-btn" onclick="showPage('sal-income',this)">Income</button>
+      <button class="nav-btn" onclick="showPage('sal-txs',this)">Transactions</button>
     </div>
     <div class="nav-group">
       <span class="nav-group-label">Export</span>
@@ -326,6 +343,159 @@
   </div>
 </div>
 
+<!-- ═══ V4 PIPELINE ═══════════════════════════════════════ -->
+<div class="page" id="page-v4-pipeline">
+  <div style="margin-bottom:1rem"><span class="badge badge-purple" style="font-size:12px;padding:4px 12px">v4 Filing-Grade Engine</span></div>
+  <div class="pipeline-steps">
+    <div class="pipeline-step" id="v4Step1"><div class="step-num">1</div><div class="step-title">Normalize</div><div class="step-desc">Double-entry decomposition</div></div>
+    <div class="pipeline-step" id="v4Step2"><div class="step-num">2</div><div class="step-title">Match Transfers</div><div class="step-desc">Lot-slice relocation</div></div>
+    <div class="pipeline-step" id="v4Step3"><div class="step-num">3</div><div class="step-title">Classify Income</div><div class="step-desc">Evidence-based queue</div></div>
+    <div class="pipeline-step" id="v4Step4"><div class="step-num">4</div><div class="step-title">FIFO Compute</div><div class="step-desc">Per-wallet cost basis</div></div>
+  </div>
+  <div class="btn-row">
+    <div><label>Tax Year</label><input type="number" id="v4TaxYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-purple" onclick="runV4Pipeline()">&#9654; Run Full v4 Pipeline</button>
+    <div style="flex:1"></div>
+    <button class="btn btn-secondary" onclick="loadV4FilingStatus()">Check Filing Status</button>
+  </div>
+  <div id="v4FilingBanner" style="display:none;margin-bottom:1rem;padding:12px 16px;border-radius:8px;font-size:13px;font-weight:600"></div>
+  <div class="card"><div class="card-title">Pipeline Results</div>
+    <div class="console" id="v4PipelineConsole">Click "Run Full v4 Pipeline" to compute filing-grade taxes.</div>
+  </div>
+</div>
+
+<!-- ═══ V4 EVENTS ════════════════════════════════════════ -->
+<div class="page" id="page-v4-events">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Wallet</label><input type="text" id="v4EvWallet" placeholder="All" style="width:100px;font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:7px;padding:7px 12px"></div>
+    <div><label>Asset</label><input type="text" id="v4EvAsset" placeholder="All" style="width:80px;font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:7px;padding:7px 12px"></div>
+    <div><label>Type</label><select id="v4EvType" style="width:140px"><option value="">All</option><option value="ACQUISITION">ACQUISITION</option><option value="DISPOSAL">DISPOSAL</option><option value="FEE_DISPOSAL">FEE_DISPOSAL</option><option value="TRANSFER_OUT">TRANSFER_OUT</option><option value="TRANSFER_IN">TRANSFER_IN</option><option value="INCOME">INCOME</option><option value="UNRESOLVED">UNRESOLVED</option><option value="UNSUPPORTED">UNSUPPORTED</option></select></div>
+    <button class="btn btn-primary" onclick="loadV4Events()">Load</button>
+  </div>
+  <div class="card"><div class="card-title">Normalized Event Ledger <span id="v4EvCount" class="badge badge-blue"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Type</th><th>Wallet</th><th>Asset</th><th>Qty</th><th>USD</th><th>Date</th><th>Paired</th><th>Rule</th></tr></thead>
+    <tbody id="v4EventsTable"><tr><td colspan="9" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ V4 EXCEPTIONS ════════════════════════════════════ -->
+<div class="page" id="page-v4-exceptions">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Year</label><input type="number" id="v4ExcYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <div><label>Severity</label><select id="v4ExcSev"><option value="">All</option><option value="BLOCKING">BLOCKING</option><option value="WARNING">WARNING</option><option value="INFO">INFO</option></select></div>
+    <button class="btn btn-primary" onclick="loadV4Exceptions()">Load</button>
+  </div>
+  <div class="stat-grid" id="v4ExcStats"></div>
+  <div class="card"><div class="card-title">Exceptions <span id="v4ExcCount" class="badge badge-red"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Severity</th><th>Category</th><th>Message</th><th>Exposure</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody id="v4ExcTable"><tr><td colspan="7" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ V4 FORM 8949 ═════════════════════════════════════ -->
+<div class="page" id="page-v4-form8949">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Tax Year</label><input type="number" id="v4F8949Year" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-primary" onclick="loadV4Form8949()">Load</button>
+  </div>
+  <div class="stat-grid" id="v4F8949Stats"></div>
+  <div class="card"><div class="card-title">Form 8949 — Short-Term <span id="v4F8949STCount" class="badge badge-amber"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Description</th><th>Acquired</th><th>Sold</th><th>Proceeds</th><th>Cost Basis</th><th>Gain/Loss</th><th>Days</th><th>Wallet</th></tr></thead>
+    <tbody id="v4F8949STTable"><tr><td colspan="8" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+  <div class="card"><div class="card-title">Form 8949 — Long-Term <span id="v4F8949LTCount" class="badge badge-blue"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Description</th><th>Acquired</th><th>Sold</th><th>Proceeds</th><th>Cost Basis</th><th>Gain/Loss</th><th>Days</th><th>Wallet</th></tr></thead>
+    <tbody id="v4F8949LTTable"><tr><td colspan="8" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ V4 LOTS ══════════════════════════════════════════ -->
+<div class="page" id="page-v4-lots">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Wallet</label><input type="text" id="v4LotWallet" placeholder="All" style="width:100px;font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:7px;padding:7px 12px"></div>
+    <div><label>Asset</label><input type="text" id="v4LotAsset" placeholder="All" style="width:80px;font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:7px;padding:7px 12px"></div>
+    <button class="btn btn-primary" onclick="loadV4Lots()">Load</button>
+  </div>
+  <div class="card"><div class="card-title">Wallet-Aware Lot Inventory <span id="v4LotCount" class="badge badge-blue"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Asset</th><th>Wallet</th><th>Orig Qty</th><th>Remaining</th><th>Cost/Unit</th><th>Acquired</th><th>Source</th><th>Parent</th></tr></thead>
+    <tbody id="v4LotsTable"><tr><td colspan="9" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ V4 TRANSFERS ═════════════════════════════════════ -->
+<div class="page" id="page-v4-transfers">
+  <div class="btn-row"><button class="btn btn-primary" onclick="loadV4Transfers()">Load Transfer Carryover</button></div>
+  <div class="card"><div class="card-title">Lot-Slice Relocation Records <span id="v4TrCount" class="badge badge-green"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Qty</th><th>From</th><th>To</th><th>Orig Acquired</th><th>Basis (USD)</th><th>Transferred</th><th>Confidence</th></tr></thead>
+    <tbody id="v4TransfersTable"><tr><td colspan="8" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ V4 INCOME ════════════════════════════════════════ -->
+<div class="page" id="page-v4-income">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Year</label><input type="number" id="v4IncYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-primary" onclick="loadV4Income()">Load</button>
+  </div>
+  <div class="stat-grid" id="v4IncStats"></div>
+  <div class="card"><div class="card-title">Income Events with Review Status</div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Qty</th><th>FMV (USD)</th><th>Source</th><th>Wallet</th><th>Status</th></tr></thead>
+    <tbody id="v4IncTable"><tr><td colspan="8" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ SALVIUM WALLET OVERVIEW ══════════════════════════ -->
+<div class="page" id="page-sal-overview">
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="salviumSync()">Sync Wallet</button>
+    <button class="btn btn-secondary" onclick="loadSalviumStatus()">Refresh</button>
+  </div>
+  <div class="stat-grid" id="salStats"></div>
+  <div class="console" id="salConsole">Salvium wallet status will appear here.</div>
+</div>
+
+<!-- ═══ SALVIUM STAKES ══════════════════════════════════ -->
+<div class="page" id="page-sal-stakes">
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="loadSalviumStakes()">Load Stakes</button>
+  </div>
+  <div class="card"><div class="card-title">Staking Lock/Unlock Pairs</div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Status</th><th>Lock Date</th><th>Lock SAL</th><th>Lock Height</th>
+      <th>Unlock Date</th><th>Unlock SAL</th><th>Yield SAL</th><th>Yield USD</th><th>SAL Price</th>
+    </tr></thead>
+    <tbody id="salStakesTable"><tr><td colspan="9" class="cell-dim">Click Load Stakes</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ SALVIUM INCOME ═════════════════════════════════ -->
+<div class="page" id="page-sal-income">
+  <div class="input-group" style="margin-bottom:1.25rem">
+    <div><label>Year</label><input type="number" id="salIncYear" value="2025" min="2020" max="2030" style="width:90px"></div>
+    <button class="btn btn-primary" onclick="loadSalviumIncome()">Load</button>
+  </div>
+  <div class="stat-grid" id="salIncStats"></div>
+  <div class="card"><div class="card-title">Staking Income Events (Ordinary Income)</div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Date</th><th>Type</th><th>Qty SAL</th><th>FMV/SAL</th><th>Total USD</th><th>Source</th><th>Review</th>
+    </tr></thead>
+    <tbody id="salIncTable"><tr><td colspan="7" class="cell-dim">Click Load</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ═══ SALVIUM TRANSACTIONS ═══════════════════════════ -->
+<div class="page" id="page-sal-txs">
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="loadSalviumTxs()">Load Transactions</button>
+  </div>
+  <div class="card"><div class="card-title">All Salvium Wallet Transactions</div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Type</th><th>Date</th><th>Amount SAL</th><th>Fee SAL</th><th>USD</th><th>Tx Hash</th><th>Status</th>
+    </tr></thead>
+    <tbody id="salTxsTable"><tr><td colspan="7" class="cell-dim">Click Load Transactions</td></tr></tbody></table></div>
+  </div>
+</div>
+
 </div><!-- /main -->
 
 <script>
@@ -466,6 +636,118 @@ const total=parseFloat(d.total_deductible_fees_usd||0);
 document.getElementById('feeStats').innerHTML=`<div class="stat-card"><div class="stat-label">Total Deductible Fees</div><div class="stat-value usd">${total.toLocaleString('en-US',{maximumFractionDigits:2})}</div><div class="stat-sub">${d.year||'all years'}</div></div>`;
 const rows_data=d.by_exchange||[];let rows='';rows_data.forEach(r=>{rows+=`<tr><td style="text-transform:uppercase;font-weight:600">${r.exchange}</td><td>${r.trade_count}</td><td class="cell-usd">${fU(r.total_fees_usd)}</td></tr>`;});
 document.getElementById('feeTable').innerHTML=rows||'<tr><td colspan="3" class="cell-dim">No fee data</td></tr>';}
+
+// ── v4 Pipeline ─────────────────────────────────────────
+function v4Yr(){return document.getElementById('v4TaxYear').value||'2025';}
+function logV4(msg,type){const el=document.getElementById('v4PipelineConsole');const ts=new Date().toISOString().substring(11,19);const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';el.innerHTML+='<div><span class="log-ts">['+ts+']</span> <span class="'+cls+'">'+msg+'</span></div>';el.scrollTop=el.scrollHeight;}
+
+async function runV4Pipeline(){const yr=v4Yr();const el=document.getElementById('v4PipelineConsole');el.innerHTML='';
+[1,2,3,4].forEach(i=>document.getElementById('v4Step'+i).classList.remove('done'));
+logV4('Starting v4 filing-grade pipeline for '+yr,'info');
+const d=await api('/v4/compute-all?year='+yr,'POST');
+if(d){
+  if(d.normalize){logV4('Step 1 Normalize: '+d.normalize.events_created+' events created from '+d.normalize.trades+' trades, '+d.normalize.deposits+' deposits, '+d.normalize.withdrawals+' withdrawals','ok');document.getElementById('v4Step1').classList.add('done');}
+  if(d.transfers){logV4('Step 2 Transfers: '+d.transfers.matched_pairs+' pairs matched, '+d.transfers.lots_relocated+' lots relocated','ok');document.getElementById('v4Step2').classList.add('done');}
+  if(d.income){logV4('Step 3 Income: '+d.income.income_events_created+' events, '+d.income.exchange_tagged+' exchange-tagged, '+d.income.unclassified+' unclassified','ok');document.getElementById('v4Step3').classList.add('done');}
+  if(d.compute){logV4('Step 4 FIFO: '+d.compute.disposals_processed+' disposals, net: $'+d.compute.net_total,'ok');
+    logV4('  Short-term: gains $'+d.compute.short_term_gains+', losses $'+d.compute.short_term_losses,'info');
+    logV4('  Long-term: gains $'+d.compute.long_term_gains+', losses $'+d.compute.long_term_losses,'info');
+    document.getElementById('v4Step4').classList.add('done');}
+  if(d.filing_status){const fs=d.filing_status;logV4('Filing status: '+(fs.filing_ready?'READY':'BLOCKED — '+fs.blocking_count+' blocking exceptions'),fs.filing_ready?'ok':'err');
+    showV4FilingBanner(fs);}
+  logV4('Run ID: '+d.run_id+', Exceptions logged: '+d.exceptions_logged,'info');
+}else{logV4('Pipeline failed','err');}}
+
+function showV4FilingBanner(fs){const el=document.getElementById('v4FilingBanner');el.style.display='block';
+if(fs.filing_ready){el.style.background='var(--green-bg)';el.style.border='1px solid var(--green)';el.style.color='var(--green)';el.textContent='FILING READY — No blocking exceptions for tax year '+fs.tax_year;}
+else{el.style.background='var(--red-bg)';el.style.border='1px solid var(--red)';el.style.color='var(--red)';el.textContent='FILING BLOCKED — '+fs.blocking_count+' blocking exception(s) must be resolved before filing';}}
+
+async function loadV4FilingStatus(){const yr=v4Yr();const d=await api('/v4/filing-status?year='+yr);if(d)showV4FilingBanner(d);}
+
+// ── v4 Events ───────────────────────────────────────────
+async function loadV4Events(){const w=document.getElementById('v4EvWallet').value.trim(),a=document.getElementById('v4EvAsset').value.trim(),t=document.getElementById('v4EvType').value;
+let url='/v4/events?limit=200';if(w)url+='&wallet='+w;if(a)url+='&asset='+a;if(t)url+='&event_type='+t;
+const d=await api(url);if(!d)return;document.getElementById('v4EvCount').textContent=d.count+' events';
+const evts=d.events||[];let rows='';evts.forEach(e=>{const typeClass=e.event_type==='DISPOSAL'||e.event_type==='FEE_DISPOSAL'?'cell-sell':e.event_type==='ACQUISITION'||e.event_type==='INCOME'?'cell-buy':e.event_type==='UNSUPPORTED'||e.event_type==='UNRESOLVED'?'log-warn':'';
+rows+=`<tr><td>${e.id}</td><td class="${typeClass}" style="font-weight:600">${e.event_type}</td><td>${e.wallet}</td><td style="font-weight:600">${e.asset}</td><td>${fC(e.quantity)}</td><td class="cell-usd">${fU(e.total_usd)}</td><td class="cell-dim">${fD(e.event_at)}</td><td>${e.paired_event_id||'—'}</td><td class="cell-dim" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${e.classification_rule||''}</td></tr>`;});
+document.getElementById('v4EventsTable').innerHTML=rows||'<tr><td colspan="9" class="cell-dim">No events — run v4 Pipeline step 1 first</td></tr>';}
+
+// ── v4 Exceptions ───────────────────────────────────────
+async function loadV4Exceptions(){const yr=document.getElementById('v4ExcYear').value,sev=document.getElementById('v4ExcSev').value;
+let url='/v4/exceptions?';if(yr)url+='year='+yr+'&';if(sev)url+='severity='+sev+'&';
+const d=await api(url);if(!d)return;const excs=Array.isArray(d)?d:[];document.getElementById('v4ExcCount').textContent=excs.length+' exceptions';
+let blocking=0,warning=0,info=0;excs.forEach(e=>{if(e.severity==='BLOCKING')blocking++;else if(e.severity==='WARNING')warning++;else info++;});
+document.getElementById('v4ExcStats').innerHTML=`<div class="stat-card"><div class="stat-label">Blocking</div><div class="stat-value" style="color:var(--red)">${blocking}</div></div><div class="stat-card"><div class="stat-label">Warning</div><div class="stat-value" style="color:var(--amber)">${warning}</div></div><div class="stat-card"><div class="stat-label">Info</div><div class="stat-value" style="color:var(--blue)">${info}</div></div>`;
+let rows='';excs.forEach(e=>{const sevClass=e.severity==='BLOCKING'?'badge-red':e.severity==='WARNING'?'badge-amber':'badge-blue';
+rows+=`<tr><td>${e.id}</td><td><span class="badge ${sevClass}">${e.severity}</span></td><td>${e.category}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${e.message}</td><td class="cell-usd">${e.dollar_exposure?fU(e.dollar_exposure):'—'}</td><td><span class="badge ${e.resolution_status==='open'?'badge-amber':'badge-green'}">${e.resolution_status}</span></td><td>${e.resolution_status==='open'?'<button class="btn btn-secondary" style="padding:3px 8px;font-size:10px" onclick="resolveV4Exc('+e.id+')">Resolve</button>':''}</td></tr>`;});
+document.getElementById('v4ExcTable').innerHTML=rows||'<tr><td colspan="7" class="cell-dim">No exceptions</td></tr>';}
+
+async function resolveV4Exc(id){const notes=prompt('Resolution notes:');if(notes===null)return;
+await api('/v4/exceptions/'+id+'/resolve?status=resolved&notes='+encodeURIComponent(notes),'POST');loadV4Exceptions();}
+
+// ── v4 Form 8949 ────────────────────────────────────────
+async function loadV4Form8949(){const yr=document.getElementById('v4F8949Year').value;const d=await api('/v4/form-8949?year='+yr);if(!d)return;
+const lines=d.lines||[];const st=lines.filter(l=>l.term==='short'),lt=lines.filter(l=>l.term==='long');
+const stT=st.reduce((a,l)=>a+parseFloat(l.gain_loss||0),0),ltT=lt.reduce((a,l)=>a+parseFloat(l.gain_loss||0),0);
+document.getElementById('v4F8949Stats').innerHTML=`<div class="stat-card"><div class="stat-label">Total Lines</div><div class="stat-value">${d.total_lines||0}</div></div><div class="stat-card"><div class="stat-label">Short-Term Net</div><div class="stat-value ${stT<0?'loss':'usd'}">${Math.abs(stT).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div><div class="stat-card"><div class="stat-label">Long-Term Net</div><div class="stat-value ${ltT<0?'loss':'usd'}">${Math.abs(ltT).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div><div class="stat-card"><div class="stat-label">Net Total</div><div class="stat-value ${(stT+ltT)<0?'loss':'usd'}">${Math.abs(stT+ltT).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>`;
+document.getElementById('v4F8949STCount').textContent=st.length+' lines';document.getElementById('v4F8949LTCount').textContent=lt.length+' lines';
+function r8949(arr,tbId){let rows='';arr.forEach(l=>{rows+=`<tr><td>${l.description||''}</td><td class="cell-dim">${l.date_acquired||''}</td><td class="cell-dim">${l.date_sold||''}</td><td class="cell-usd">${fU(l.proceeds)}</td><td class="cell-usd">${fU(l.cost_basis)}</td><td class="${glClass(l.gain_loss)}">${fU(l.gain_loss)}</td><td>${l.holding_days||0}</td><td>${l.wallet||''}</td></tr>`;});
+document.getElementById(tbId).innerHTML=rows||'<tr><td colspan="8" class="cell-dim">None</td></tr>';}
+r8949(st,'v4F8949STTable');r8949(lt,'v4F8949LTTable');}
+
+// ── v4 Lots ─────────────────────────────────────────────
+async function loadV4Lots(){const w=document.getElementById('v4LotWallet').value.trim(),a=document.getElementById('v4LotAsset').value.trim();
+let url='/v4/lots?';if(w)url+='wallet='+w+'&';if(a)url+='asset='+a.toUpperCase()+'&';
+const d=await api(url);if(!d)return;document.getElementById('v4LotCount').textContent=(d.count||0)+' lots';
+const lots=d.lots||[];let rows='';lots.forEach(l=>{rows+=`<tr><td>${l.id}</td><td style="font-weight:600">${l.asset}</td><td>${l.wallet}</td><td>${fC(l.original_quantity)}</td><td>${fC(l.remaining)}</td><td class="cell-usd">${fU(l.cost_per_unit_usd)}</td><td class="cell-dim">${fD(l.original_acquired_at)}</td><td>${(l.source_type||'').replace(/_/g,' ')}</td><td>${l.parent_lot_id||'—'}</td></tr>`;});
+document.getElementById('v4LotsTable').innerHTML=rows||'<tr><td colspan="9" class="cell-dim">No lots — run v4 Pipeline first</td></tr>';}
+
+// ── v4 Transfers ────────────────────────────────────────
+async function loadV4Transfers(){const d=await api('/v4/transfers');if(!d)return;
+document.getElementById('v4TrCount').textContent=(d.count||0)+' records';
+const trs=d.transfers||[];let rows='';trs.forEach(t=>{rows+=`<tr><td style="font-weight:600">${t.asset}</td><td>${fC(t.quantity)}</td><td>${t.source_wallet}</td><td>${t.dest_wallet}</td><td class="cell-dim">${fD(t.original_acquired_at)}</td><td class="cell-usd">${fU(t.carryover_basis_usd)}</td><td class="cell-dim">${fD(t.transferred_at)}</td><td><span class="badge ${t.match_confidence==='tx_hash'?'badge-green':'badge-amber'}">${t.match_confidence}</span></td></tr>`;});
+document.getElementById('v4TransfersTable').innerHTML=rows||'<tr><td colspan="8" class="cell-dim">No transfers — run v4 Pipeline first</td></tr>';}
+
+// ── v4 Income ───────────────────────────────────────────
+async function loadV4Income(){const yr=document.getElementById('v4IncYear').value;const d=await api('/v4/income?year='+yr);if(!d)return;
+const total=parseFloat(d.total_income_usd||0);
+document.getElementById('v4IncStats').innerHTML=`<div class="stat-card"><div class="stat-label">Income Events</div><div class="stat-value">${d.total_income_events||0}</div></div><div class="stat-card"><div class="stat-label">Total Income (USD)</div><div class="stat-value usd">${total.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div><div class="stat-card"><div class="stat-label">Pending Review</div><div class="stat-value" style="color:var(--amber)">${d.pending_review||0}</div></div><div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" style="color:var(--green)">${d.confirmed||0}</div></div>`;
+const evts=d.events||[];let rows='';evts.forEach(e=>{const stClass=e.review_status==='confirmed'?'badge-green':e.review_status==='pending'?'badge-amber':'badge-red';
+rows+=`<tr><td class="cell-dim">${fD(e.dominion_at)}</td><td>${(e.income_type||'').replace(/_/g,' ')}</td><td style="font-weight:600">${e.asset}</td><td>${fC(e.quantity)}</td><td class="cell-usd">${fU(e.total_fmv_usd)}</td><td>${e.classification_source||''}</td><td>${e.wallet}</td><td><span class="badge ${stClass}">${e.review_status}</span></td></tr>`;});
+document.getElementById('v4IncTable').innerHTML=rows||'<tr><td colspan="8" class="cell-dim">No income events — run v4 Pipeline first</td></tr>';}
+
+// ── Salvium ──────────────────────────────────────────────
+async function loadSalviumStatus(){const d=await api('/salvium/status');if(!d)return;
+document.getElementById('salStats').innerHTML=`<div class="stat-card"><div class="stat-label">Active Locks</div><div class="stat-value" style="color:var(--amber)">${d.active_locks||0}</div></div><div class="stat-card"><div class="stat-label">Completed Stakes</div><div class="stat-value" style="color:var(--green)">${d.completed_stakes||0}</div></div><div class="stat-card"><div class="stat-label">Locked SAL</div><div class="stat-value">${fC(d.locked_sal)}</div></div><div class="stat-card"><div class="stat-label">Total Yield (SAL)</div><div class="stat-value" style="color:var(--green)">${fC(d.total_yield_sal)}</div></div><div class="stat-card"><div class="stat-label">Total Yield (USD)</div><div class="stat-value usd">${parseFloat(d.total_yield_usd||0).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div><div class="stat-card"><div class="stat-label">Wallet Balance</div><div class="stat-value">${fC(d.wallet_balance_sal||'--')}</div><div class="stat-sub">Unlocked: ${fC(d.unlocked_balance_sal||'--')}</div></div><div class="stat-card"><div class="stat-label">Deposits</div><div class="stat-value">${d.total_deposits||0}</div></div><div class="stat-card"><div class="stat-label">Withdrawals</div><div class="stat-value">${d.total_withdrawals||0}</div></div>`;
+const con=document.getElementById('salConsole');con.innerHTML=`<span class="log-ok">Wallet connected: ${d.wallet_connected?'Yes':'No'}</span>\n${d.wallet_error?'<span class="log-err">Error: '+d.wallet_error+'</span>\n':''}<span class="log-info">Status refreshed at ${new Date().toLocaleTimeString()}</span>`;}
+
+async function salviumSync(){const con=document.getElementById('salConsole');con.innerHTML='<span class="log-info">Syncing Salvium wallet...</span>';
+const d=await api('/salvium/sync','POST');if(!d){con.innerHTML+='<br><span class="log-err">Sync failed</span>';return;}
+const s=d.staking||{};con.innerHTML+=`<br><span class="log-ok">Sync complete</span><br>Locks found: ${s.locks_found||0} | Unlocks: ${s.unlocks_found||0} | Matched: ${s.matched_pairs||0} | New income: ${s.new_income_events||0}`;
+loadSalviumStatus();}
+
+async function loadSalviumStakes(){const d=await api('/salvium/stakes');if(!d)return;
+const rows=(d.stakes||[]).map(s=>{const stClass=s.status==='unlocked'?'badge-green':'badge-amber';
+return `<tr><td><span class="badge ${stClass}">${s.status}</span></td><td class="cell-dim">${fD(s.lock_at)}</td><td>${fC(s.lock_amount)}</td><td class="cell-dim">${s.lock_height||'-'}</td><td class="cell-dim">${s.unlock_at?fD(s.unlock_at):'-'}</td><td>${s.unlock_amount?fC(s.unlock_amount):'-'}</td><td style="color:var(--green);font-weight:600">${s.yield_amount?fC(s.yield_amount):'-'}</td><td class="cell-usd">${s.yield_usd?fU(s.yield_usd):'-'}</td><td class="cell-dim">${s.sal_price_usd?'$'+parseFloat(s.sal_price_usd).toFixed(4):'-'}</td></tr>`;}).join('');
+document.getElementById('salStakesTable').innerHTML=rows||'<tr><td colspan="9" class="cell-dim">No stakes found — sync wallet first</td></tr>';}
+
+async function loadSalviumIncome(){const yr=document.getElementById('salIncYear').value;const d=await api('/salvium/income?year='+yr);if(!d)return;
+const total=parseFloat(d.total_staking_income_usd||0);
+document.getElementById('salIncStats').innerHTML=`<div class="stat-card"><div class="stat-label">Staking Income Events</div><div class="stat-value">${d.total_income_events||0}</div></div><div class="stat-card"><div class="stat-label">Total Staking Income (USD)</div><div class="stat-value usd">${total.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>`;
+const evts=d.events||[];let rows='';evts.forEach(e=>{const stClass=e.review_status==='confirmed'?'badge-green':'badge-amber';
+rows+=`<tr><td class="cell-dim">${fD(e.dominion_at)}</td><td>${e.income_type||''}</td><td>${fC(e.quantity)}</td><td class="cell-dim">${e.fmv_per_unit_usd?'$'+parseFloat(e.fmv_per_unit_usd).toFixed(4):'-'}</td><td class="cell-usd">${fU(e.total_fmv_usd)}</td><td>${e.classification_source||''}</td><td><span class="badge ${stClass}">${e.review_status}</span></td></tr>`;});
+document.getElementById('salIncTable').innerHTML=rows||'<tr><td colspan="7" class="cell-dim">No staking income for this year</td></tr>';}
+
+async function loadSalviumTxs(){
+const deps=await api('/trades/salvium?limit=1');
+let rows='';
+// Fetch deposits and withdrawals for salvium
+try{const resp1=await fetch(API+'/summary');const summary=await resp1.json();} catch(e){}
+// Use the generic data queries
+const depsR=await fetch(API+'/salvium/status');const dData=await depsR.json();
+// For now, show a simple combined view from the status
+rows='<tr><td colspan="7" class="cell-dim">Use Sync to pull transactions, then check Stakes and Income tabs for details</td></tr>';
+document.getElementById('salTxsTable').innerHTML=rows;}
 
 // ── Init ─────────────────────────────────────────────────
 checkHealth();loadOverview();setInterval(checkHealth,30000);

@@ -1,0 +1,87 @@
+# =============================================================================
+# SALVIUM WALLET RPC — add to hummingbot_App.yaml
+#
+# Runs salvium-wallet-rpc connected to your existing Salvium node.
+# The Tax Collector queries this for all wallet transactions including
+# staking locks, yield payouts, sends, and receives.
+#
+# PREREQUISITES:
+#   1. Your Salvium daemon (salviumd) must be running and synced.
+#      If it runs on the TrueNAS host directly (not Docker), set
+#      SALVIUM_DAEMON_HOST to 127.0.0.1 and the daemon port.
+#      If it runs in Docker, use the container's network address.
+#
+#   2. Your wallet file must be accessible at the path below.
+#      Copy your .keys and wallet files to the salvium data directory.
+#
+#   3. Add to your .env file:
+#        SALVIUM_WALLET_FILE=<wallet filename without path, e.g. "my_wallet">
+#        SALVIUM_WALLET_PASSWORD=<wallet password>
+#        SALVIUM_RPC_USER=sal_rpc
+#        SALVIUM_RPC_PASS=<choose a strong password>
+#        SALVIUM_DAEMON_HOST=127.0.0.1
+#        SALVIUM_DAEMON_PORT=18081
+#
+#   4. Add 18082 to Gluetun's FIREWALL_INPUT_PORTS if you want
+#      external RPC access (optional — Tax Collector uses 127.0.0.1)
+#
+#   5. Create the data directory:
+#        mkdir -p /mnt/sharedrive/apps/hummingbot/salvium/wallet
+#
+#   6. Add "salvium" to TAX_EXCHANGES:
+#        TAX_EXCHANGES=nonkyc,mexc,salvium
+#
+#   7. Add Salvium RPC env vars to the tax-collector service:
+#        - SALVIUM_RPC_URL=http://127.0.0.1:18082
+#        - SALVIUM_RPC_USER=${SALVIUM_RPC_USER}
+#        - SALVIUM_RPC_PASS=${SALVIUM_RPC_PASS}
+# =============================================================================
+
+  # ── Salvium Wallet RPC ──────────────────────────────────────────────────
+  # Provides JSON-RPC access to your Salvium wallet for the Tax Collector.
+  # Connects to your existing salviumd node for blockchain data.
+  salvium-wallet-rpc:
+    image: salvium/salvium:latest    # or build from github.com/salvium/salvium
+    container_name: hummingbot-salvium-wallet-rpc
+    network_mode: "service:gluetun"
+    depends_on:
+      wait-for-vpn:
+        condition: service_completed_successfully
+      gluetun:
+        condition: service_healthy
+    entrypoint: ["salvium-wallet-rpc"]
+    command:
+      - --wallet-file=/wallet/${SALVIUM_WALLET_FILE:-wallet}
+      - --password=${SALVIUM_WALLET_PASSWORD}
+      - --rpc-bind-port=18082
+      - --rpc-bind-ip=127.0.0.1
+      - --confirm-external-bind
+      - --rpc-login=${SALVIUM_RPC_USER:-sal_rpc}:${SALVIUM_RPC_PASS}
+      - --daemon-host=${SALVIUM_DAEMON_HOST:-127.0.0.1}
+      - --daemon-port=${SALVIUM_DAEMON_PORT:-18081}
+      - --log-level=1
+      - --trusted-daemon
+    environment:
+      - TZ=Europe/Tirane
+    volumes:
+      - /mnt/sharedrive/apps/hummingbot/salvium/wallet:/wallet
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-s",
+          "-X", "POST",
+          "http://127.0.0.1:18082/json_rpc",
+          "-d", '{"jsonrpc":"2.0","id":"0","method":"get_height"}',
+          "-H", "Content-Type: application/json",
+          "-u", "${SALVIUM_RPC_USER:-sal_rpc}:${SALVIUM_RPC_PASS}"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      autoheal: "true"
+    logging: *default-logging

@@ -91,6 +91,7 @@ TICKER_TO_COINGECKO: dict[str, str] = {
     "IMX": "immutable-x",
     "WLD": "worldcoin-wld",
     "MX": "mx-token",
+    "SAL": "salvium",
 }
 
 # Runtime cache for CoinGecko ID lookups (avoids repeated /search calls)

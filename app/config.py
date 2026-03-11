@@ -26,3 +26,11 @@ class Settings:
         self.nonkyc_api_secret = os.environ.get("NONKYC_API_SECRET", "")
         self.mexc_api_key = os.environ.get("MEXC_API_KEY", "")
         self.mexc_api_secret = os.environ.get("MEXC_API_SECRET", "")
+
+        # Salvium wallet RPC (not API-key based — uses RPC URL/user/pass)
+        self.salvium_rpc_url = os.environ.get("SALVIUM_RPC_URL", "http://127.0.0.1:19082")
+        self.salvium_rpc_user = os.environ.get("SALVIUM_RPC_USER", "")
+        self.salvium_rpc_pass = os.environ.get("SALVIUM_RPC_PASS", "")
+        # Dummy credentials so get_exchange() doesn't skip salvium
+        self.salvium_api_key = os.environ.get("SALVIUM_API_KEY", "wallet_rpc")
+        self.salvium_api_secret = os.environ.get("SALVIUM_API_SECRET", "unused")
