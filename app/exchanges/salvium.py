@@ -38,7 +38,7 @@ from exchanges import BaseExchange, register
 logger = logging.getLogger("tax-collector.salvium")
 
 # 1 SAL = 1e12 atomic units (same as Monero)
-ATOMIC_UNITS = Decimal("1000000000000")
+ATOMIC_UNITS = Decimal("100000000")       # 1e8 (Salvium)
 D = Decimal
 
 
@@ -139,8 +139,16 @@ class SalviumWalletExchange(BaseExchange):
         return await self._rpc("get_transfers", params)
 
     async def _get_balance(self) -> dict:
-        """Get wallet balance including staked amounts."""
-        return await self._rpc("get_balance")
+        """Get wallet balance — Salvium returns balances array by asset type."""
+        result = await self._rpc("get_balance")
+        balances = result.get("balances", [])
+        if balances:
+            sal = balances[0]  # SAL1 is the native asset
+            return {
+                "balance": sal.get("balance", 0),
+                "unlocked_balance": sal.get("unlocked_balance", 0),
+            }
+        return {"balance": 0, "unlocked_balance": 0}
 
     # ── Exchange Plugin Interface ─────────────────────────────────────────
 
