@@ -7,7 +7,7 @@ Connects to salvium-wallet-rpc (Monero-fork JSON-RPC) to pull:
   - Mining payouts (if any)
 
 Salvium specifics:
-  - Monero fork, uses atomic units: 1 SAL = 1e12 atomic units
+  - Monero fork, uses atomic units: 1 SAL = 1e8 atomic units
   - Staking: lock SAL for 21,600 blocks (~30 days), receive stake + yield on unlock
   - Yield = income at FMV when received (Rev. Rul. 2023-14)
   - The lock itself is NOT a taxable event
@@ -19,9 +19,14 @@ Transaction types from get_transfers:
   "pending" — unconfirmed outgoing
   "failed"  — failed transaction
   "pool"    — in the mempool but not confirmed
-  
-Salvium-specific transfer subtypes (from show_transfers color coding):
-  - Staking lock:    outgoing transfer to self with lock time
+
+Staking lock detection (from real on-chain data):
+  - Staking locks have amount=0, with the staked SAL in the "fee" field
+  - Normal fees are < 0.1 SAL (< 10,000,000 atomic). Staking "fees" are >> 1 SAL
+  - No destinations and zero payment_id
+
+Salvium-specific transfer subtypes:
+  - Staking lock:    outgoing with amount=0, huge fee = staked amount
   - Staking unlock:  incoming "protocol_tx" / minted coins (stake + yield)
   - Mining reward:   incoming "coinbase" type
 """
@@ -37,9 +42,13 @@ from exchanges import BaseExchange, register
 
 logger = logging.getLogger("tax-collector.salvium")
 
-# 1 SAL = 1e12 atomic units (same as Monero)
-ATOMIC_UNITS = Decimal("100000000")       # 1e8 (Salvium)
+# 1 SAL = 1e8 atomic units (Salvium uses 8 decimal places, NOT Monero's 12)
+ATOMIC_UNITS = Decimal("100000000")
 D = Decimal
+
+# Normal network fees are < 0.1 SAL. Any "fee" above this threshold in an
+# amount=0 outgoing tx is actually a staking lock (staked SAL in fee field).
+NORMAL_FEE_THRESHOLD = 100_000_000  # 1 SAL in atomic units
 
 
 @register
@@ -97,58 +106,61 @@ class SalviumWalletExchange(BaseExchange):
             return datetime.now(timezone.utc)
         return datetime.fromtimestamp(epoch, tz=timezone.utc)
 
-    def _is_staking_unlock(self, transfer: dict) -> bool:
-        """Detect if an incoming transfer is a staking unlock (protocol_tx / minted coins).
-        Staking unlocks are incoming transfers where the coins were minted by the protocol,
-        not sent from another wallet. They typically have no payment_id and come from
-        a protocol_tx (block-level minting transaction)."""
-        # Heuristics for detecting staking unlocks:
-        # 1. Type is "in" (incoming)
-        # 2. The tx has coinbase-like properties or is a protocol_tx
-        # 3. No sending address (minted, not transferred)
-        tx_type = transfer.get("type", "")
-        subaddr = transfer.get("subaddr_index", {})
-        
-        # Protocol transactions (staking payouts) are identified by:
-        # - Being incoming
-        # - Having specific flags that distinguish them from regular transfers
-        # Look for protocol_tx indicators
-        if transfer.get("coinbase", False):
-            return False  # This is mining, not staking
-        
-        # Salvium staking unlocks come as incoming transfers with locked amounts
-        # that include both the original stake and the yield
-        # The unlock_time field and the transfer notes can help identify these
-        
-        # For now, we tag transfers that look like staking returns
-        # (large round-ish amounts that match known stake patterns)
-        # The income classifier will do final classification
-        return False  # Conservative: let the income classifier handle it
-
     async def _get_all_transfers(self, min_height: int = 0) -> dict:
-        """Fetch all transfers from the wallet."""
-        params = {
-            "in": True,
-            "out": True,
-            "pending": True,
-            "failed": False,
-            "pool": False,
-            "filter_by_height": min_height > 0,
-            "min_height": min_height,
-        }
-        return await self._rpc("get_transfers", params)
+        """Fetch all transfers from ALL accounts in the wallet.
+
+        The wallet may have multiple accounts (e.g. "Primary", "consolidate").
+        We use get_accounts to discover them, then query each one.
+        """
+        accounts_result = await self._rpc("get_accounts")
+        accounts = accounts_result.get("subaddress_accounts", [])
+
+        # Fallback: if get_accounts returns nothing, query account 0
+        if not accounts:
+            accounts = [{"account_index": 0, "label": "Primary"}]
+
+        all_in = []
+        all_out = []
+        all_pending = []
+
+        for acct in accounts:
+            acct_idx = acct.get("account_index", 0)
+            acct_label = acct.get("label", "")
+            params = {
+                "in": True,
+                "out": True,
+                "pending": True,
+                "failed": False,
+                "pool": False,
+                "account_index": acct_idx,
+                "filter_by_height": min_height > 0,
+                "min_height": min_height,
+            }
+            result = await self._rpc("get_transfers", params)
+
+            for tx in result.get("in", []):
+                tx["_account_index"] = acct_idx
+                tx["_account_label"] = acct_label
+                all_in.append(tx)
+            for tx in result.get("out", []):
+                tx["_account_index"] = acct_idx
+                tx["_account_label"] = acct_label
+                all_out.append(tx)
+            for tx in result.get("pending", []):
+                tx["_account_index"] = acct_idx
+                tx["_account_label"] = acct_label
+                all_pending.append(tx)
+
+        return {"in": all_in, "out": all_out, "pending": all_pending}
 
     async def _get_balance(self) -> dict:
-        """Get wallet balance — Salvium returns balances array by asset type."""
-        result = await self._rpc("get_balance")
-        balances = result.get("balances", [])
-        if balances:
-            sal = balances[0]  # SAL1 is the native asset
-            return {
-                "balance": sal.get("balance", 0),
-                "unlocked_balance": sal.get("unlocked_balance", 0),
-            }
-        return {"balance": 0, "unlocked_balance": 0}
+        """Get total wallet balance across all accounts."""
+        result = await self._rpc("get_accounts")
+        return {
+            "balance": result.get("total_balance", 0),
+            "unlocked_balance": result.get("total_unlocked_balance", 0),
+            "accounts": result.get("subaddress_accounts", []),
+        }
 
     # ── Exchange Plugin Interface ─────────────────────────────────────────
 
@@ -187,7 +199,7 @@ class SalviumWalletExchange(BaseExchange):
                 # We tag it with metadata and let the income classifier decide
                 tx_subtype = "incoming"
                 description = f"Received: {amount} SAL (block {height})"
-                
+
                 # Check for staking unlock indicators
                 unlock_time = tx.get("unlock_time", 0)
                 if unlock_time > 0:
@@ -214,6 +226,8 @@ class SalviumWalletExchange(BaseExchange):
                     "_salvium_description": description,
                     "_salvium_unlock_time": tx.get("unlock_time", 0),
                     "_salvium_confirmations": tx.get("confirmations", 0),
+                    "_salvium_account_index": tx.get("_account_index", 0),
+                    "_salvium_account_label": tx.get("_account_label", ""),
                 }),
             })
 
@@ -231,21 +245,33 @@ class SalviumWalletExchange(BaseExchange):
             if since and timestamp <= since:
                 continue
 
-            amount = self._atomic_to_sal(tx.get("amount", 0))
-            fee = self._atomic_to_sal(tx.get("fee", 0))
             tx_hash = tx.get("txid", "")
             height = tx.get("height", 0)
-            
-            # Check if this is a staking lock (sent to self with lock time)
             destinations = tx.get("destinations", [])
-            unlock_time = tx.get("unlock_time", 0)
-            
-            if unlock_time > 0:
+
+            # Detect staking lock: amount=0, huge "fee" = the staked amount
+            fee_atomic = int(tx.get("fee", 0))
+            amount_atomic = int(tx.get("amount", 0))
+            has_destinations = bool(destinations)
+
+            if amount_atomic == 0 and fee_atomic > NORMAL_FEE_THRESHOLD and not has_destinations:
+                # This is a staking lock — the "fee" is actually the staked amount
                 tx_subtype = "staking_lock"
-                description = f"Staking lock: {amount} SAL for ~{unlock_time} blocks"
+                amount = self._atomic_to_sal(fee_atomic)
+                fee = D("0")  # The real network fee is absorbed into the staking tx
+                description = f"Staking lock: {amount} SAL at block {height}"
             else:
-                tx_subtype = "outgoing"
-                description = f"Sent: {amount} SAL (block {height})"
+                # Normal outgoing transfer
+                amount = self._atomic_to_sal(amount_atomic)
+                fee = self._atomic_to_sal(fee_atomic)
+                unlock_time = tx.get("unlock_time", 0)
+
+                if unlock_time > 0:
+                    tx_subtype = "staking_lock"
+                    description = f"Staking lock: {amount} SAL for ~{unlock_time} blocks"
+                else:
+                    tx_subtype = "outgoing"
+                    description = f"Sent: {amount} SAL (block {height})"
 
             withdrawals.append({
                 "exchange": self.name,
@@ -266,8 +292,10 @@ class SalviumWalletExchange(BaseExchange):
                     "_salvium_subtype": tx_subtype,
                     "_salvium_height": height,
                     "_salvium_description": description,
-                    "_salvium_unlock_time": unlock_time,
+                    "_salvium_unlock_time": tx.get("unlock_time", 0),
                     "_salvium_destinations": destinations,
+                    "_salvium_account_index": tx.get("_account_index", 0),
+                    "_salvium_account_label": tx.get("_account_label", ""),
                 }),
             })
 
@@ -283,29 +311,46 @@ class SalviumWalletExchange(BaseExchange):
         balance = await self._get_balance()
         transfers = await self._get_all_transfers()
 
+        total_bal = self._atomic_to_sal(balance.get("balance", 0))
+        unlocked_bal = self._atomic_to_sal(balance.get("unlocked_balance", 0))
+        locked_bal = total_bal - unlocked_bal
+
         total_staked = D("0")
-        total_yield = D("0")
         active_stakes = 0
         completed_stakes = 0
 
-        # Count outgoing staking locks
+        # Count outgoing staking locks using the corrected detection logic
         for tx in transfers.get("out", []):
-            if tx.get("unlock_time", 0) > 0:
-                amount = self._atomic_to_sal(tx.get("amount", 0))
-                total_staked += amount
+            fee_atomic = int(tx.get("fee", 0))
+            amount_atomic = int(tx.get("amount", 0))
+            has_destinations = bool(tx.get("destinations", []))
+            unlock_time = tx.get("unlock_time", 0)
+
+            is_staking_lock = (
+                (amount_atomic == 0 and fee_atomic > NORMAL_FEE_THRESHOLD and not has_destinations)
+                or unlock_time > 0
+            )
+
+            if is_staking_lock:
+                if amount_atomic == 0 and fee_atomic > NORMAL_FEE_THRESHOLD:
+                    staked = self._atomic_to_sal(fee_atomic)
+                else:
+                    staked = self._atomic_to_sal(amount_atomic)
+                total_staked += staked
                 active_stakes += 1
 
         # Count incoming that look like staking unlocks
         for tx in transfers.get("in", []):
             if not tx.get("coinbase", False) and tx.get("unlock_time", 0) > 0:
-                amount = self._atomic_to_sal(tx.get("amount", 0))
                 completed_stakes += 1
 
         return {
-            "wallet_balance_sal": str(self._atomic_to_sal(balance.get("balance", 0))),
-            "unlocked_balance_sal": str(self._atomic_to_sal(balance.get("unlocked_balance", 0))),
+            "wallet_balance_sal": str(total_bal),
+            "unlocked_balance_sal": str(unlocked_bal),
+            "locked_balance_sal": str(locked_bal),
             "total_incoming": len(transfers.get("in", [])),
             "total_outgoing": len(transfers.get("out", [])),
+            "total_staked_sal": str(total_staked),
             "active_stakes": active_stakes,
             "completed_stakes": completed_stakes,
         }
