@@ -91,9 +91,9 @@ class SalviumWalletExchange(BaseExchange):
                     logger.warning(f"Salvium RPC {method} returned {resp.status}: {body}")
                     return {}
                 data = await resp.json()
-                if "error" in data:
+                if "error" in data and data["error"]:
                     logger.warning(f"Salvium RPC {method} error: {data['error']}")
-                    return {}
+                    return {"error": data["error"]}
                 return data.get("result", {})
 
     def _atomic_to_sal(self, atomic: int | str) -> Decimal:

@@ -1120,6 +1120,144 @@ async def salvium_income(year: int = Query(None)):
     }
 
 
+@app.get("/salvium/accounts")
+async def salvium_accounts():
+    """Get per-account balances from Salvium wallet."""
+    ex = get_exchange("salvium", settings)
+    if not ex:
+        raise HTTPException(503, "Salvium not configured")
+    accounts = await ex._rpc("get_accounts")
+    if "error" in accounts:
+        raise HTTPException(502, f"Wallet RPC error: {accounts['error']}")
+    accts = accounts.get("subaddress_accounts", [])
+
+    from decimal import Decimal as D
+    ATOMIC = D("100000000")
+    result = []
+    for a in accts:
+        result.append({
+            "index": a["account_index"],
+            "label": a.get("label", ""),
+            "address": a.get("base_address", ""),
+            "balance_sal": str(D(str(a.get("balance", 0))) / ATOMIC),
+            "unlocked_sal": str(D(str(a.get("unlocked_balance", 0))) / ATOMIC),
+            "locked_sal": str((D(str(a.get("balance", 0))) - D(str(a.get("unlocked_balance", 0)))) / ATOMIC),
+        })
+
+    return {
+        "accounts": result,
+        "total_balance_sal": str(D(str(accounts.get("total_balance", 0))) / ATOMIC),
+        "total_unlocked_sal": str(D(str(accounts.get("total_unlocked_balance", 0))) / ATOMIC),
+        "total_locked_sal": str((D(str(accounts.get("total_balance", 0))) - D(str(accounts.get("total_unlocked_balance", 0)))) / ATOMIC),
+    }
+
+
+@app.post("/salvium/sweep")
+async def salvium_sweep(
+    from_account: int = Query(..., description="Source account index"),
+    to_account: int = Query(..., description="Destination account index"),
+):
+    """Sweep all unlocked SAL from one account to another."""
+    ex = get_exchange("salvium", settings)
+    if not ex:
+        raise HTTPException(503, "Salvium not configured")
+
+    # Get destination address from accounts
+    accounts = await ex._rpc("get_accounts")
+    if "error" in accounts:
+        raise HTTPException(502, f"Wallet RPC error: {accounts['error']}")
+    accts = accounts.get("subaddress_accounts", [])
+    dest_addr = None
+    for a in accts:
+        if a["account_index"] == to_account:
+            dest_addr = a["base_address"]
+            break
+    if not dest_addr:
+        raise HTTPException(400, f"Account {to_account} not found")
+
+    result = await ex._rpc("sweep_all", {
+        "address": dest_addr,
+        "asset_type": "SAL1",
+        "account_index": from_account,
+    })
+
+    if not result or "tx_hash_list" not in result:
+        error = result.get("error", {}).get("message", "Unknown error") if isinstance(result, dict) else "RPC call failed"
+        raise HTTPException(400, f"Sweep failed: {error}")
+
+    from decimal import Decimal as D
+    ATOMIC = D("100000000")
+    amounts = [str(D(str(a)) / ATOMIC) for a in result.get("amount_list", [])]
+    fees = [str(D(str(f)) / ATOMIC) for f in result.get("fee_list", [])]
+
+    return {
+        "status": "success",
+        "from_account": from_account,
+        "to_account": to_account,
+        "tx_hashes": result.get("tx_hash_list", []),
+        "amounts_sal": amounts,
+        "fees_sal": fees,
+    }
+
+
+@app.post("/salvium/stake")
+async def salvium_stake(
+    amount: float = Query(..., description="Amount of SAL to stake"),
+    account_index: int = Query(0, description="Account to stake from"),
+):
+    """Stake SAL tokens (~30 day lock period)."""
+    ex = get_exchange("salvium", settings)
+    if not ex:
+        raise HTTPException(503, "Salvium not configured")
+
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    from decimal import Decimal as D
+    # Convert SAL to atomic units (1e8)
+    atomic_amount = int(D(str(amount)) * D("100000000"))
+
+    # Get own address for the staking account
+    accounts = await ex._rpc("get_accounts")
+    if "error" in accounts:
+        raise HTTPException(502, f"Wallet RPC error: {accounts['error']}")
+    accts = accounts.get("subaddress_accounts", [])
+    own_addr = None
+    for a in accts:
+        if a["account_index"] == account_index:
+            own_addr = a["base_address"]
+            break
+    if not own_addr:
+        raise HTTPException(400, f"Account {account_index} not found")
+
+    result = await ex._rpc("transfer", {
+        "destinations": [{"amount": atomic_amount, "address": own_addr}],
+        "source_asset": "SAL1",
+        "dest_asset": "SAL1",
+        "tx_type": 6,  # STAKE
+        "account_index": account_index,
+        "get_tx_key": True,
+    })
+
+    if not result or "tx_hash" not in result:
+        error_msg = "Unknown error"
+        if isinstance(result, dict) and "error" in result:
+            error_msg = result["error"].get("message", error_msg)
+        raise HTTPException(400, f"Stake failed: {error_msg}")
+
+    ATOMIC = D("100000000")
+    fee_sal = str(D(str(result.get("fee", 0))) / ATOMIC)
+
+    return {
+        "status": "success",
+        "amount_sal": str(amount),
+        "account_index": account_index,
+        "tx_hash": result.get("tx_hash", ""),
+        "fee_sal": fee_sal,
+        "lock_period": "~30 days (21,600 blocks)",
+    }
+
+
 @app.post("/salvium/sync")
 async def salvium_sync():
     """Manual sync of Salvium wallet transactions + staking pair detection."""

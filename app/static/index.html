@@ -451,6 +451,44 @@
     <button class="btn btn-secondary" onclick="loadSalviumStatus()">Refresh</button>
   </div>
   <div class="stat-grid" id="salStats"></div>
+
+  <!-- Account Balances -->
+  <div class="card">
+    <div class="card-title">Account Balances</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Account</th><th>Label</th><th>Balance</th><th>Unlocked</th><th>Locked/Staked</th></tr>
+        </thead>
+        <tbody id="accountsTable">
+          <tr><td colspan="5" class="cell-dim">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Consolidate Funds -->
+  <div class="card">
+    <div class="card-title">Consolidate Funds</div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="doSweep(1, 0)">Sweep Account 1 &rarr; Account 0</button>
+      <button class="btn btn-secondary" onclick="doSweep(0, 1)">Sweep Account 0 &rarr; Account 1</button>
+    </div>
+    <div class="console" id="sweepConsole">Ready.</div>
+  </div>
+
+  <!-- Stake SAL -->
+  <div class="card">
+    <div class="card-title">Stake SAL (~30 day lock)</div>
+    <div class="input-group" style="margin-bottom:0.75rem">
+      <div><label>Amount (SAL)</label><input type="number" id="stakeAmount" placeholder="0" min="1" step="any" style="width:150px"></div>
+      <div><label>From Account</label><select id="stakeAccount"><option value="0">Account 0 (Primary)</option><option value="1">Account 1 (consolidate)</option></select></div>
+      <button class="btn btn-purple" onclick="doStake()">Stake</button>
+      <button class="btn btn-secondary" onclick="stakeAll()">Stake All Unlocked</button>
+    </div>
+    <div class="console" id="stakeConsole">Enter amount and click Stake. Funds will be locked for ~30 days.</div>
+  </div>
+
   <div class="console" id="salConsole">Salvium wallet status will appear here.</div>
 </div>
 
@@ -505,7 +543,7 @@ function showPage(id,btn){
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   if(btn)btn.classList.add('active');
-  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats};
+  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats,'sal-overview':function(){loadSalviumStatus();loadAccounts();}};
   if(loaders[id])loaders[id]();
 }
 function fU(v){if(!v||v==='None'||v==='null')return'—';const n=parseFloat(v);if(isNaN(n))return'—';return(n>=1000?'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):n>=1?'$'+n.toFixed(2):'$'+n.toFixed(6));}
@@ -748,6 +786,81 @@ const depsR=await fetch(API+'/salvium/status');const dData=await depsR.json();
 // For now, show a simple combined view from the status
 rows='<tr><td colspan="7" class="cell-dim">Use Sync to pull transactions, then check Stakes and Income tabs for details</td></tr>';
 document.getElementById('salTxsTable').innerHTML=rows;}
+
+// ── Salvium Wallet Ops ──────────────────────────────────
+async function loadAccounts(){
+  const d=await api('/salvium/accounts');
+  if(!d)return;
+  let rows='';
+  (d.accounts||[]).forEach(a=>{
+    rows+=`<tr>
+      <td>${a.index}</td>
+      <td>${a.label||'\u2014'}</td>
+      <td style="font-weight:600">${parseFloat(a.balance_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
+      <td class="cell-usd">${parseFloat(a.unlocked_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
+      <td style="color:var(--amber)">${parseFloat(a.locked_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
+    </tr>`;
+  });
+  rows+=`<tr style="font-weight:700;border-top:2px solid var(--border)">
+    <td colspan="2">TOTAL</td>
+    <td>${parseFloat(d.total_balance_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
+    <td class="cell-usd">${parseFloat(d.total_unlocked_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
+    <td style="color:var(--amber)">${parseFloat(d.total_locked_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
+  </tr>`;
+  document.getElementById('accountsTable').innerHTML=rows;
+}
+
+async function doSweep(from,to){
+  const el=document.getElementById('sweepConsole');
+  el.innerHTML=`<span class="log-info">Sweeping account ${from} \u2192 account ${to}...</span>`;
+  try{
+    const r=await fetch(`/salvium/sweep?from_account=${from}&to_account=${to}`,{method:'POST'});
+    const d=await r.json();
+    if(r.ok){
+      el.innerHTML+=`<div class="log-ok">Success! TX: ${(d.tx_hashes||[]).join(', ')}</div>`;
+      el.innerHTML+=`<div class="log-ok">Amount: ${(d.amounts_sal||[]).join(' + ')} SAL | Fee: ${(d.fees_sal||[]).join(' + ')} SAL</div>`;
+      setTimeout(loadAccounts,5000);
+    }else{
+      el.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;
+    }
+  }catch(e){
+    el.innerHTML+=`<div class="log-err">Error: ${e}</div>`;
+  }
+}
+
+async function doStake(){
+  const amount=document.getElementById('stakeAmount').value;
+  const acct=document.getElementById('stakeAccount').value;
+  if(!amount||parseFloat(amount)<=0){alert('Enter a valid amount');return;}
+  const el=document.getElementById('stakeConsole');
+  el.innerHTML=`<span class="log-info">Staking ${amount} SAL from account ${acct}...</span>`;
+  try{
+    const r=await fetch(`/salvium/stake?amount=${amount}&account_index=${acct}`,{method:'POST'});
+    const d=await r.json();
+    if(r.ok){
+      el.innerHTML+=`<div class="log-ok">Staked! TX: ${d.tx_hash}</div>`;
+      el.innerHTML+=`<div class="log-ok">Fee: ${d.fee_sal} SAL | Lock: ${d.lock_period}</div>`;
+      setTimeout(loadAccounts,5000);
+    }else{
+      el.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;
+    }
+  }catch(e){
+    el.innerHTML+=`<div class="log-err">Error: ${e}</div>`;
+  }
+}
+
+async function stakeAll(){
+  const acct=document.getElementById('stakeAccount').value;
+  const d=await api('/salvium/accounts');
+  if(!d)return;
+  const account=(d.accounts||[]).find(a=>a.index==acct);
+  if(!account){alert('Account not found');return;}
+  const unlocked=parseFloat(account.unlocked_sal);
+  if(unlocked<=0){alert('No unlocked funds in this account');return;}
+  const stakeAmount=(unlocked-0.01).toFixed(2);
+  document.getElementById('stakeAmount').value=stakeAmount;
+  doStake();
+}
 
 // ── Init ─────────────────────────────────────────────────
 checkHealth();loadOverview();setInterval(checkHealth,30000);

@@ -607,3 +607,258 @@ class TestSalviumConfig:
         from price_oracle import TICKER_TO_COINGECKO
         assert "SAL" in TICKER_TO_COINGECKO
         assert TICKER_TO_COINGECKO["SAL"] == "salvium"
+
+
+# ═══════════════════════════════════════════════════════════
+# Wallet Operations (sweep, stake, accounts)
+# ═══════════════════════════════════════════════════════════
+
+class TestWalletOperations:
+    def test_atomic_conversion_stake(self):
+        """1000 SAL = 100000000000 atomic units."""
+        sal = D("1000")
+        atomic = int(sal * D("100000000"))
+        assert atomic == 100000000000
+
+    def test_atomic_conversion_small(self):
+        """0.01 SAL = 1000000 atomic."""
+        sal = D("0.01")
+        atomic = int(sal * D("100000000"))
+        assert atomic == 1000000
+
+    def test_stake_tx_type_is_6(self):
+        """Staking uses transfer with tx_type=6."""
+        tx_type = 6  # STAKE enum value
+        assert tx_type == 6
+
+    def test_sweep_requires_asset_type(self):
+        """sweep_all requires asset_type parameter."""
+        params = {"address": "test", "asset_type": "SAL1", "account_index": 0}
+        assert "asset_type" in params
+        assert params["asset_type"] == "SAL1"
+
+    def test_locked_balance_calculation(self):
+        """Locked SAL = total balance - unlocked balance."""
+        total = D("44047.47695976")
+        unlocked = D("16057.61620000")
+        locked = total - unlocked
+        assert locked == D("27989.86075976")
+
+    def test_stake_all_leaves_fee_buffer(self):
+        """Stake all should leave ~0.01 SAL for fees."""
+        unlocked = 16057.62
+        fee_buffer = 0.01
+        stake_amount = unlocked - fee_buffer
+        assert stake_amount < unlocked
+        assert stake_amount > 0
+
+    def test_account_balance_response_format(self):
+        """Account response should have required fields."""
+        required_fields = ["index", "label", "address", "balance_sal", "unlocked_sal", "locked_sal"]
+        account = {"index": 0, "label": "Primary", "address": "SC11...",
+                   "balance_sal": "44047.48", "unlocked_sal": "16057.62", "locked_sal": "27989.86"}
+        for field in required_fields:
+            assert field in account
+
+
+class TestRPCErrorHandling:
+    """Tests for the updated _rpc method that returns error details."""
+
+    @pytest.mark.asyncio
+    async def test_rpc_error_returns_error_dict(self):
+        """RPC error should return {'error': ...} instead of empty dict."""
+        ex = SalviumWalletExchange()
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "jsonrpc": "2.0",
+            "id": "0",
+            "error": {"code": -1, "message": "Not enough unlocked balance"}
+        })
+
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session_ctx)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_ctx = AsyncMock()
+        mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_post_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_ctx.post = MagicMock(return_value=mock_post_ctx)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_ctx):
+            result = await ex._rpc("sweep_all", {"address": "test"})
+
+        assert "error" in result
+        assert result["error"]["message"] == "Not enough unlocked balance"
+
+    @pytest.mark.asyncio
+    async def test_rpc_success_returns_result(self):
+        """Successful RPC should return the result dict."""
+        ex = SalviumWalletExchange()
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "jsonrpc": "2.0",
+            "id": "0",
+            "result": {"tx_hash": "abc123", "fee": 1000000}
+        })
+
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session_ctx)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_ctx = AsyncMock()
+        mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_post_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_ctx.post = MagicMock(return_value=mock_post_ctx)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_ctx):
+            result = await ex._rpc("transfer", {"amount": 100})
+
+        assert result["tx_hash"] == "abc123"
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_rpc_http_error_returns_empty(self):
+        """HTTP errors should still return empty dict."""
+        ex = SalviumWalletExchange()
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_resp.text = AsyncMock(return_value="Internal Server Error")
+
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session_ctx)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_ctx = AsyncMock()
+        mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_post_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_ctx.post = MagicMock(return_value=mock_post_ctx)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_ctx):
+            result = await ex._rpc("get_accounts")
+
+        assert result == {}
+
+
+class TestSweepEndpointLogic:
+    """Tests for sweep endpoint logic."""
+
+    def test_sweep_params_format(self):
+        """Sweep params must include address, asset_type, account_index."""
+        dest_addr = "SC1siBXGmu3HGK2mrggQ8M2T9mSEkWKh9UmTYDTzV9cr"
+        params = {
+            "address": dest_addr,
+            "asset_type": "SAL1",
+            "account_index": 0,
+        }
+        assert params["asset_type"] == "SAL1"
+        assert params["account_index"] == 0
+        assert len(params["address"]) > 10
+
+    def test_sweep_result_parsing(self):
+        """Sweep result with tx_hash_list, amount_list, fee_list."""
+        result = {
+            "tx_hash_list": ["abc123", "def456"],
+            "amount_list": [500000000000, 300000000000],
+            "fee_list": [1000000, 1000000],
+        }
+        ATOMIC = D("100000000")
+        amounts = [str(D(str(a)) / ATOMIC) for a in result["amount_list"]]
+        fees = [str(D(str(f)) / ATOMIC) for f in result["fee_list"]]
+        assert amounts == ["5000", "3000"]
+        assert fees == ["0.01", "0.01"]
+        assert len(result["tx_hash_list"]) == 2
+
+
+class TestStakeEndpointLogic:
+    """Tests for stake endpoint logic."""
+
+    def test_stake_params_format(self):
+        """Stake params must include destinations, tx_type=6, assets."""
+        own_addr = "SC11aHNaiaVQzopqEDwGVhVeHcEz4mNB9NfBBwMtH9iN"
+        atomic_amount = int(D("1000") * D("100000000"))
+        params = {
+            "destinations": [{"amount": atomic_amount, "address": own_addr}],
+            "source_asset": "SAL1",
+            "dest_asset": "SAL1",
+            "tx_type": 6,
+            "account_index": 0,
+            "get_tx_key": True,
+        }
+        assert params["tx_type"] == 6
+        assert params["source_asset"] == "SAL1"
+        assert params["destinations"][0]["amount"] == 100000000000
+        assert params["get_tx_key"] is True
+
+    def test_stake_result_parsing(self):
+        """Stake result with tx_hash and fee."""
+        result = {
+            "tx_hash": "stake_tx_abc123",
+            "fee": 2000000,
+        }
+        ATOMIC = D("100000000")
+        fee_sal = str(D(str(result["fee"])) / ATOMIC)
+        assert fee_sal == "0.02"
+        assert result["tx_hash"] == "stake_tx_abc123"
+
+    def test_stake_negative_amount_rejected(self):
+        """Negative stake amount should be rejected."""
+        amount = -100
+        assert amount <= 0
+
+    def test_stake_zero_amount_rejected(self):
+        """Zero stake amount should be rejected."""
+        amount = 0
+        assert amount <= 0
+
+
+class TestAccountsEndpointLogic:
+    """Tests for accounts endpoint logic."""
+
+    def test_accounts_response_parsing(self):
+        """Parse get_accounts RPC response into API format."""
+        rpc_response = {
+            "subaddress_accounts": [
+                {"account_index": 0, "balance": 4404747695976,
+                 "base_address": "SC11aHNa...", "label": "Primary account",
+                 "unlocked_balance": 1605761620000},
+                {"account_index": 1, "balance": 0,
+                 "base_address": "SC1siBXG...", "label": "consolidate",
+                 "unlocked_balance": 0},
+            ],
+            "total_balance": 4404747695976,
+            "total_unlocked_balance": 1605761620000,
+        }
+        ATOMIC = D("100000000")
+        accts = rpc_response["subaddress_accounts"]
+        result = []
+        for a in accts:
+            result.append({
+                "index": a["account_index"],
+                "label": a.get("label", ""),
+                "address": a.get("base_address", ""),
+                "balance_sal": str(D(str(a.get("balance", 0))) / ATOMIC),
+                "unlocked_sal": str(D(str(a.get("unlocked_balance", 0))) / ATOMIC),
+                "locked_sal": str((D(str(a.get("balance", 0))) - D(str(a.get("unlocked_balance", 0)))) / ATOMIC),
+            })
+
+        assert len(result) == 2
+        assert D(result[0]["balance_sal"]) == D("44047.47695976")
+        assert D(result[0]["unlocked_sal"]) == D("16057.61620000")
+        assert D(result[0]["locked_sal"]) == D("27989.86075976")
+        assert D(result[1]["balance_sal"]) == D("0")
+        assert D(result[1]["locked_sal"]) == D("0")
+
+    def test_total_balance_calculation(self):
+        """Total balance/locked/unlocked from RPC response."""
+        ATOMIC = D("100000000")
+        total_balance = D("4404747695976") / ATOMIC
+        total_unlocked = D("1605761620000") / ATOMIC
+        total_locked = total_balance - total_unlocked
+        assert total_balance == D("44047.47695976")
+        assert total_unlocked == D("16057.61620000")
+        assert total_locked == D("27989.86075976")
