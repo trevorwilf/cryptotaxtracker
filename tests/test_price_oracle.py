@@ -142,6 +142,17 @@ class TestTradeUsdResolution:
         # Should not raise
 
 
+class TestUSTRemoval:
+    def test_ust_not_in_stablecoins(self):
+        from price_oracle import STABLECOINS
+        assert "UST" not in STABLECOINS
+
+    def test_other_stablecoins_still_present(self):
+        from price_oracle import STABLECOINS
+        for coin in ["USDT", "USDC", "DAI", "BUSD"]:
+            assert coin in STABLECOINS
+
+
 class TestTransferUsdResolution:
     """Test resolve_transfer_usd."""
 

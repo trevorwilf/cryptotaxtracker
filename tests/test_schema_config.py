@@ -119,6 +119,18 @@ class TestSchemaSyntax:
         assert "term" in SCHEMA_V3_SQL
 
 
+class TestV4Schema:
+    def test_v4_schema_has_all_required_tables(self):
+        from schema_v4 import SCHEMA_V4_SQL
+        required = [
+            "tax.normalized_events", "tax.lots_v4", "tax.disposals_v4",
+            "tax.exceptions", "tax.valuation_log", "tax.transfer_carryover",
+            "tax.run_manifest", "tax.form_8949_v4", "tax.income_events_v4",
+        ]
+        for table in required:
+            assert table in SCHEMA_V4_SQL, f"Missing v4 table: {table}"
+
+
 class TestDatabaseSchemaSQL:
     """Test the main schema SQL from database.py"""
 

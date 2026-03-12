@@ -107,6 +107,8 @@ class TaxEngineV4:
             "DELETE FROM tax.form_8949_v4 WHERE run_id = :r"), {"r": run_id})
         await session.execute(text(
             "DELETE FROM tax.disposals_v4 WHERE run_id = :r"), {"r": run_id})
+        await session.execute(text(
+            "DELETE FROM tax.lots_v4 WHERE run_id = :r"), {"r": run_id})
 
         # 1. Create lots from ACQUISITION events
         acq_count = await self._create_acquisition_lots(session, run_id)
@@ -302,18 +304,22 @@ class TaxEngineV4:
             total_usd = D(ev["total_usd"]) if ev["total_usd"] else None
             proceeds = total_usd or (unit_price * disposal_qty if unit_price else None)
 
-            # Fee disposal has no proceeds (fee itself is the cost)
+            # Fee disposal proceeds = FMV of the fee (what you "received" was the service)
             if ev["event_type"] == "FEE_DISPOSAL":
-                proceeds = ZERO
+                proceeds = D(str(ev["total_usd"])) if ev["total_usd"] else ZERO
+                if proceeds == ZERO and disposal_qty > ZERO:
+                    self.exc.log(WARNING, "MISSING_PRICE",
+                                 f"FEE_DISPOSAL event {ev['id']} has no USD valuation",
+                                 source_event_id=ev["id"], run_id=run_id)
 
-            # Find lots for (wallet, asset) with remaining > 0
+            # Find lots for (wallet, asset) with remaining > 0, scoped to run_id
             lot_result = await session.execute(text("""
                 SELECT id, remaining::text, cost_per_unit_usd::text,
                        original_acquired_at, source_type
                 FROM tax.lots_v4
-                WHERE wallet = :wallet AND asset = :asset AND remaining > 0
+                WHERE wallet = :wallet AND asset = :asset AND remaining > 0 AND run_id = :run_id
                 ORDER BY original_acquired_at ASC, id ASC
-            """), {"wallet": wallet, "asset": asset})
+            """), {"wallet": wallet, "asset": asset, "run_id": run_id})
             lots = [dict(zip(lot_result.keys(), row))
                     for row in lot_result.fetchall()]
 
@@ -419,6 +425,61 @@ class TaxEngineV4:
                              tax_year=disposed_at.year, run_id=run_id)
 
         return all_disposals
+
+    # ── Public methods for split pipeline (Fix 2) ────────────────────────
+
+    async def create_acquisition_lots(self, session: AsyncSession,
+                                      run_id: int) -> int:
+        """Public wrapper: create lots from ACQUISITION events."""
+        return await self._create_acquisition_lots(session, run_id)
+
+    async def create_income_lots(self, session: AsyncSession,
+                                 run_id: int) -> int:
+        """Public wrapper: create lots from confirmed income events."""
+        return await self._create_income_lots(session, run_id)
+
+    async def process_disposals_and_report(self, session: AsyncSession,
+                                           run_id: int, year: int = None) -> dict:
+        """Process disposals + generate Form 8949 (steps 4-5 of pipeline)."""
+        stats = {"disposals_processed": 0, "form_8949_lines": 0,
+                 "short_term_gains": ZERO, "short_term_losses": ZERO,
+                 "long_term_gains": ZERO, "long_term_losses": ZERO}
+
+        # Clear previous disposals/form for this run
+        await session.execute(text(
+            "DELETE FROM tax.form_8949_v4 WHERE run_id = :r"), {"r": run_id})
+        await session.execute(text(
+            "DELETE FROM tax.disposals_v4 WHERE run_id = :r"), {"r": run_id})
+
+        disposals = await self._process_disposals(session, run_id, year)
+        stats["disposals_processed"] = len(disposals)
+
+        for disp in disposals:
+            await self._insert_form_8949(session, disp, run_id)
+            stats["form_8949_lines"] += 1
+            if disp.gain_loss_usd is not None:
+                if disp.term == "short":
+                    if disp.gain_loss_usd >= ZERO:
+                        stats["short_term_gains"] += disp.gain_loss_usd
+                    else:
+                        stats["short_term_losses"] += disp.gain_loss_usd
+                else:
+                    if disp.gain_loss_usd >= ZERO:
+                        stats["long_term_gains"] += disp.gain_loss_usd
+                    else:
+                        stats["long_term_losses"] += disp.gain_loss_usd
+
+        return {
+            "disposals_processed": stats["disposals_processed"],
+            "form_8949_lines": stats["form_8949_lines"],
+            "short_term_gains": str(stats["short_term_gains"]),
+            "short_term_losses": str(stats["short_term_losses"]),
+            "long_term_gains": str(stats["long_term_gains"]),
+            "long_term_losses": str(stats["long_term_losses"]),
+            "net_total": str(stats["short_term_gains"] + stats["short_term_losses"] +
+                            stats["long_term_gains"] + stats["long_term_losses"]),
+            "filing_ready": not self.exc.has_blocking,
+        }
 
     async def _insert_form_8949(self, session: AsyncSession,
                                 disp: DisposalV4, run_id: int):

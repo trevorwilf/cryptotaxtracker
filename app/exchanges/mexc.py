@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from urllib.parse import urlencode
 
 import aiohttp
@@ -67,9 +68,11 @@ class MEXCExchange(BaseExchange):
 
     def _parse_ts(self, val) -> datetime:
         if val is None:
+            logger.warning("MEXC: Missing timestamp on record — defaulting to now()")
             return datetime.now(timezone.utc)
         if isinstance(val, (int, float)):
             return datetime.fromtimestamp(val / 1000, tz=timezone.utc)
+        logger.warning("MEXC: Missing timestamp on record — defaulting to now()")
         return datetime.now(timezone.utc)
 
     async def _get_traded_symbols(self) -> list[str]:
@@ -115,7 +118,7 @@ class MEXCExchange(BaseExchange):
                         "side": "buy" if t.get("isBuyer") else "sell",
                         "price": str(t.get("price", "0")),
                         "quantity": str(t.get("qty", "0")),
-                        "total": str(float(t.get("price", 0)) * float(t.get("qty", 0))),
+                        "total": str(Decimal(str(t.get("price", "0"))) * Decimal(str(t.get("qty", "0")))),
                         "fee": str(t.get("commission", "0")),
                         "fee_asset": t.get("commissionAsset", ""),
                         "price_usd": None, "quantity_usd": None, "total_usd": None,

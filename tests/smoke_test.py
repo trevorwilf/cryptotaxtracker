@@ -174,10 +174,10 @@ check("Gain/loss calculation", check_gain_loss)
 
 def check_holding_period():
     acquired = datetime(2024, 1, 15, tzinfo=timezone.utc)
-    disposed_short = acquired + timedelta(days=364)
-    disposed_long = acquired + timedelta(days=365)
-    assert (disposed_short - acquired).days < 365
-    assert (disposed_long - acquired).days >= 365
+    disposed_short = acquired + timedelta(days=365)   # exactly 365 = short-term
+    disposed_long = acquired + timedelta(days=366)     # 366 = long-term (>365)
+    assert (disposed_short - acquired).days <= 365     # IRS: must be MORE THAN one year
+    assert (disposed_long - acquired).days > 365
 
 
 check("Holding period classification", check_holding_period)

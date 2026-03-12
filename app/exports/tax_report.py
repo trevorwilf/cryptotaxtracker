@@ -495,3 +495,307 @@ async def _build_raw_trades(wb, session, year):
             r += 1
 
         _auto(ws)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V4 TAX REPORT — reads from v4 tables
+# ══════════════════════════════════════════════════════════════════════════
+
+async def generate_full_tax_report_v4(session: AsyncSession, year: int,
+                                       run_id: int = None) -> str:
+    """Generate the full accountant-ready XLSX tax report from v4 tables."""
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"tax_report_v4_{year}_full_{ts}.xlsx"
+    filepath = os.path.join(EXPORT_DIR, filename)
+    wb = Workbook()
+
+    await _build_summary_v4(wb, session, year, run_id)
+    await _build_form_8949_v4(wb, session, year, "short", "Form 8949 (ST)", run_id)
+    await _build_form_8949_v4(wb, session, year, "long", "Form 8949 (LT)", run_id)
+    await _build_income_schedule_v4(wb, session, year, run_id)
+    await _build_transfer_recon_v4(wb, session, run_id)
+    await _build_lot_inventory_v4(wb, session, run_id)
+    await _build_exceptions_tab(wb, session, run_id)
+    await _build_run_manifest_tab(wb, session, run_id)
+
+    wb.save(filepath)
+    logger.info(f"V4 full tax report exported: {filepath}")
+    return filepath
+
+
+async def _build_summary_v4(wb, session, year, run_id):
+    ws = wb.active
+    ws.title = "Summary"
+
+    ws.cell(row=1, column=1, value=f"Cryptocurrency Tax Report (v4) — {year}").font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font = NOTE_FONT
+    ws.cell(row=3, column=1, value="Cost basis method: FIFO (Wallet-Aware, Filing-Grade)").font = NOTE_FONT
+
+    ws.cell(row=5, column=1, value="SCHEDULE D SUMMARY").font = H2_FONT
+    r = 6
+    _hdr(ws, r, ["Category", "Proceeds (USD)", "Cost Basis (USD)", "Net Gain/Loss (USD)"])
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"y": year}
+    if run_id:
+        params["rid"] = run_id
+
+    res = await session.execute(text(f"""
+        SELECT
+            COALESCE(SUM(CASE WHEN term='short' THEN proceeds END), 0),
+            COALESCE(SUM(CASE WHEN term='short' THEN cost_basis END), 0),
+            COALESCE(SUM(CASE WHEN term='short' THEN gain_loss END), 0),
+            COALESCE(SUM(CASE WHEN term='long' THEN proceeds END), 0),
+            COALESCE(SUM(CASE WHEN term='long' THEN cost_basis END), 0),
+            COALESCE(SUM(CASE WHEN term='long' THEN gain_loss END), 0),
+            COUNT(*)
+        FROM tax.form_8949_v4 WHERE tax_year = :y {run_filter}
+    """), params)
+    d = res.fetchone()
+
+    for label, proc, cost, gl in [
+        ("Short-Term (< 1 year)", d[0], d[1], d[2]),
+        ("Long-Term (> 1 year)", d[3], d[4], d[5]),
+        ("TOTAL", float(d[0]) + float(d[3]), float(d[1]) + float(d[4]), float(d[2]) + float(d[5])),
+    ]:
+        _data_cell(ws, r, 1, label)
+        ws.cell(row=r, column=1).font = BOLD_FONT if label == "TOTAL" else DATA_FONT
+        _usd_cell(ws, r, 2, proc)
+        _usd_cell(ws, r, 3, cost)
+        _usd_cell(ws, r, 4, gl)
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_form_8949_v4(wb, session, year, term, tab_name, run_id):
+    ws = wb.create_sheet(title=tab_name)
+    box = "B" if term == "short" else "D"
+    label = "Short-Term" if term == "short" else "Long-Term"
+
+    ws.cell(row=1, column=1, value=f"Form 8949 — {label} Capital Gains and Losses (v4)").font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f"Tax Year: {year} | Box {box} (basis NOT reported to IRS)").font = NOTE_FONT
+
+    r = 4
+    headers = [
+        "(a) Description", "(b) Date Acquired", "(c) Date Sold",
+        "(d) Proceeds", "(e) Cost Basis",
+        "(f) Code", "(g) Adjustment",
+        "(h) Gain or Loss", "Asset", "Wallet", "Exchange", "Holding Days"
+    ]
+    _hdr(ws, r, headers)
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"y": year, "t": term}
+    if run_id:
+        params["rid"] = run_id
+
+    res = await session.execute(text(f"""
+        SELECT description, date_acquired, date_sold, proceeds, cost_basis,
+               adjustment_code, adjustment_amount, gain_loss, asset, wallet, exchange, holding_days
+        FROM tax.form_8949_v4
+        WHERE tax_year = :y AND term = :t {run_filter}
+        ORDER BY date_sold, asset
+    """), params)
+
+    total_proceeds = D("0")
+    total_cost = D("0")
+    total_gl = D("0")
+    count = 0
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0])
+        _data_cell(ws, r, 2, row_data[1])
+        _data_cell(ws, r, 3, row_data[2])
+        _usd_cell(ws, r, 4, row_data[3])
+        _usd_cell(ws, r, 5, row_data[4])
+        _data_cell(ws, r, 6, row_data[5] or "")
+        _usd_cell(ws, r, 7, row_data[6])
+        _usd_cell(ws, r, 8, row_data[7])
+        _data_cell(ws, r, 9, row_data[8])
+        _data_cell(ws, r, 10, row_data[9])
+        _data_cell(ws, r, 11, row_data[10])
+        _data_cell(ws, r, 12, row_data[11])
+        total_proceeds += D(str(row_data[3] or 0))
+        total_cost += D(str(row_data[4] or 0))
+        total_gl += D(str(row_data[7] or 0))
+        count += 1
+        r += 1
+
+    r += 1
+    ws.cell(row=r, column=1, value=f"TOTALS ({count} disposals)").font = BOLD_FONT
+    _usd_cell(ws, r, 4, str(total_proceeds))
+    _usd_cell(ws, r, 5, str(total_cost))
+    _usd_cell(ws, r, 8, str(total_gl))
+    _auto(ws)
+
+
+async def _build_income_schedule_v4(wb, session, year, run_id):
+    ws = wb.create_sheet(title="Income Schedule")
+    ws.cell(row=1, column=1, value=f"Ordinary Income Schedule (v4) — {year}").font = TITLE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Date", "Type", "Asset", "Wallet", "Amount", "FMV (USD)", "Status"])
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"y": year}
+    if run_id:
+        params["rid"] = run_id
+
+    res = await session.execute(text(f"""
+        SELECT dominion_at, income_type, asset, wallet, quantity, total_fmv_usd, review_status
+        FROM tax.income_events_v4
+        WHERE EXTRACT(YEAR FROM dominion_at) = :y {run_filter}
+        ORDER BY dominion_at ASC
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0], is_date=True)
+        _data_cell(ws, r, 2, (row_data[1] or "").replace("_", " ").title())
+        _data_cell(ws, r, 3, row_data[2])
+        _data_cell(ws, r, 4, row_data[3])
+        _data_cell(ws, r, 5, row_data[4])
+        _usd_cell(ws, r, 6, row_data[5])
+        _data_cell(ws, r, 7, row_data[6])
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_transfer_recon_v4(wb, session, run_id):
+    ws = wb.create_sheet(title="Transfer Recon")
+    ws.cell(row=1, column=1, value="Transfer Carryover Records (v4)").font = TITLE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Date", "Asset", "Qty", "From Wallet", "To Wallet",
+                  "Original Acquired", "Carryover Basis (USD)", "Confidence"])
+    r += 1
+
+    run_filter = "WHERE run_id = :rid" if run_id else ""
+    params = {"rid": run_id} if run_id else {}
+
+    res = await session.execute(text(f"""
+        SELECT transferred_at, asset, quantity, source_wallet, dest_wallet,
+               original_acquired_at, carryover_basis_usd, match_confidence
+        FROM tax.transfer_carryover
+        {run_filter}
+        ORDER BY transferred_at ASC
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0], is_date=True)
+        _data_cell(ws, r, 2, row_data[1])
+        _data_cell(ws, r, 3, row_data[2])
+        _data_cell(ws, r, 4, (row_data[3] or "").upper())
+        _data_cell(ws, r, 5, (row_data[4] or "").upper())
+        _data_cell(ws, r, 6, row_data[5], is_date=True)
+        _usd_cell(ws, r, 7, row_data[6])
+        _data_cell(ws, r, 8, row_data[7])
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_lot_inventory_v4(wb, session, run_id):
+    ws = wb.create_sheet(title="Lot Inventory")
+    ws.cell(row=1, column=1, value="FIFO Lot Inventory — v4 (Wallet-Aware)").font = TITLE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Asset", "Wallet", "Acquired", "Source",
+                  "Original Qty", "Remaining", "Cost/Unit (USD)", "Total Cost (USD)"])
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"rid": run_id} if run_id else {}
+
+    res = await session.execute(text(f"""
+        SELECT asset, wallet, original_acquired_at, source_type,
+               original_quantity, remaining, cost_per_unit_usd, total_cost_usd
+        FROM tax.lots_v4
+        WHERE remaining > 0 {run_filter}
+        ORDER BY asset, original_acquired_at
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0])
+        _data_cell(ws, r, 2, (row_data[1] or "").upper())
+        _data_cell(ws, r, 3, row_data[2], is_date=True)
+        _data_cell(ws, r, 4, (row_data[3] or "").replace("_", " ").title())
+        _data_cell(ws, r, 5, row_data[4])
+        _data_cell(ws, r, 6, row_data[5])
+        _usd_cell(ws, r, 7, row_data[6])
+        _usd_cell(ws, r, 8, row_data[7])
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_exceptions_tab(wb, session, run_id):
+    ws = wb.create_sheet(title="Exceptions")
+    ws.cell(row=1, column=1, value="Open Exceptions").font = TITLE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Severity", "Code", "Message", "Status", "Tax Year", "Created"])
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"rid": run_id} if run_id else {}
+
+    res = await session.execute(text(f"""
+        SELECT severity, exception_code, message, status, tax_year, created_at
+        FROM tax.exceptions
+        WHERE status = 'open' {run_filter}
+        ORDER BY severity DESC, created_at ASC
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0])
+        _data_cell(ws, r, 2, row_data[1])
+        _data_cell(ws, r, 3, row_data[2])
+        _data_cell(ws, r, 4, row_data[3])
+        _data_cell(ws, r, 5, row_data[4])
+        _data_cell(ws, r, 6, row_data[5], is_date=True)
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_run_manifest_tab(wb, session, run_id):
+    ws = wb.create_sheet(title="Run Manifest")
+    ws.cell(row=1, column=1, value="Computation Run History").font = TITLE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Run ID", "Type", "Tax Year", "Method", "Status",
+                  "Started", "Completed", "Events", "Disposals", "Filing Ready"])
+    r += 1
+
+    run_filter = "WHERE id = :rid" if run_id else ""
+    params = {"rid": run_id} if run_id else {}
+
+    res = await session.execute(text(f"""
+        SELECT id, run_type, tax_year, basis_method, status,
+               started_at, completed_at, total_events, total_disposals, filing_ready
+        FROM tax.run_manifest
+        {run_filter}
+        ORDER BY started_at DESC
+        LIMIT 50
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0])
+        _data_cell(ws, r, 2, row_data[1])
+        _data_cell(ws, r, 3, row_data[2])
+        _data_cell(ws, r, 4, row_data[3])
+        _data_cell(ws, r, 5, row_data[4])
+        _data_cell(ws, r, 6, row_data[5], is_date=True)
+        _data_cell(ws, r, 7, row_data[6], is_date=True)
+        _data_cell(ws, r, 8, row_data[7])
+        _data_cell(ws, r, 9, row_data[8])
+        _data_cell(ws, r, 10, row_data[9])
+        r += 1
+
+    _auto(ws)

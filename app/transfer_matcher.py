@@ -42,7 +42,7 @@ class TransferMatcher:
             SELECT id, exchange, asset, amount, fee, confirmed_at, tx_hash
             FROM tax.withdrawals
             WHERE confirmed_at IS NOT NULL AND amount > 0
-            ORDER BY confirmed_at ASC
+            ORDER BY confirmed_at ASC, id ASC
         """))
         withdrawals = [dict(zip(wd_result.keys(), row)) for row in wd_result.fetchall()]
 
@@ -51,7 +51,7 @@ class TransferMatcher:
             SELECT id, exchange, asset, amount, confirmed_at, tx_hash
             FROM tax.deposits
             WHERE confirmed_at IS NOT NULL AND amount > 0
-            ORDER BY confirmed_at ASC
+            ORDER BY confirmed_at ASC, id ASC
         """))
         deposits = [dict(zip(dep_result.keys(), row)) for row in dep_result.fetchall()]
 

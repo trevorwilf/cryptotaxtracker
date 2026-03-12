@@ -26,8 +26,9 @@ logger = logging.getLogger("tax-collector.price-oracle")
 
 STABLECOINS = {
     "USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "GUSD", "FRAX",
-    "LUSD", "SUSD", "USDD", "CUSD", "USD", "UST",
+    "LUSD", "SUSD", "USDD", "CUSD", "USD",
 }
+# NOTE: UST removed — depegged May 2022, must use actual market FMV
 
 # ── Common ticker → CoinGecko ID mapping ────────────────────────────────
 # CoinGecko uses slugs, not tickers. This covers the most common assets.
@@ -134,12 +135,19 @@ class PriceOracle:
         price = await self._fetch_coingecko(ticker, price_date)
 
         # 4. NonKYC asset fallback (current price, not historical — better than nothing)
+        used_nonkyc = False
         if price is None:
             price = await self._fetch_nonkyc(ticker)
+            if price is not None:
+                used_nonkyc = True
 
         # 5. Cache whatever we got (even None → stored as 0 to avoid re-fetching)
         if price is not None:
-            await self._set_cached(session, ticker, price_date, price, "coingecko")
+            if used_nonkyc:
+                await self._set_cached(session, ticker, price_date, price, "nonkyc_current_fallback")
+                logger.warning(f"Used NonKYC CURRENT price for {ticker} on {price_date} — not historical")
+            else:
+                await self._set_cached(session, ticker, price_date, price, "coingecko")
         else:
             logger.warning(f"No USD price found for {ticker} on {price_date}")
 

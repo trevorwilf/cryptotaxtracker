@@ -90,7 +90,7 @@ class IncomeClassifier:
                 SELECT deposit_id FROM tax.transfer_matches WHERE deposit_id IS NOT NULL
             )
             AND d.amount > 0
-            ORDER BY d.confirmed_at ASC
+            ORDER BY d.confirmed_at ASC, d.id ASC
         """))
         deposits = [dict(zip(result.keys(), row)) for row in result.fetchall()]
 
@@ -138,7 +138,7 @@ class IncomeClassifier:
             SELECT id, exchange, pool_name, asset_out, amount_out, amount_out_usd, executed_at
             FROM tax.pool_activity
             WHERE action = 'reward' AND amount_out > 0
-            ORDER BY executed_at ASC
+            ORDER BY executed_at ASC, id ASC
         """))
         for row in result.fetchall():
             events.append({
@@ -183,7 +183,7 @@ class IncomeClassifier:
                    received_at, description
             FROM tax.income_events
             WHERE 1=1 {yf}
-            ORDER BY received_at ASC
+            ORDER BY received_at ASC, id ASC
         """), params)
         events = [dict(zip(events_result.keys(), row)) for row in events_result.fetchall()]
 

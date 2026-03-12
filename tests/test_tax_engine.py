@@ -230,25 +230,27 @@ class TestSummaryComputation:
 # ── Holding Period Classification ─────────────────────────────────────────
 
 class TestHoldingPeriod:
-    """Verify short-term (<365 days) vs long-term (>=365 days)."""
+    """Verify short-term (<=365 days) vs long-term (>365 days).
+    IRS rule: long-term = held MORE THAN one year (>365 days, not >=365)."""
 
-    def test_exactly_365_days_is_long(self):
+    def test_exactly_365_days_is_short(self):
+        """IRS rule: long-term = held MORE THAN one year (>365 days, not >=365)."""
         acquired = JAN_2024
         disposed = acquired + timedelta(days=365)
         holding = (disposed - acquired).days
-        term = "long" if holding >= 365 else "short"
-        assert term == "long"
+        term = "long" if holding > 365 else "short"
+        assert term == "short"
 
     def test_364_days_is_short(self):
         acquired = JAN_2024
         disposed = acquired + timedelta(days=364)
         holding = (disposed - acquired).days
-        term = "long" if holding >= 365 else "short"
+        term = "long" if holding > 365 else "short"
         assert term == "short"
 
     def test_same_day_is_short(self):
         holding = 0
-        term = "long" if holding >= 365 else "short"
+        term = "long" if holding > 365 else "short"
         assert term == "short"
 
     def test_multi_year_is_long(self):
@@ -256,7 +258,7 @@ class TestHoldingPeriod:
         disposed = SEP_2025
         holding = (disposed - acquired).days
         assert holding > 365
-        term = "long" if holding >= 365 else "short"
+        term = "long" if holding > 365 else "short"
         assert term == "long"
 
 

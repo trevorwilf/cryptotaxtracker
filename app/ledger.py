@@ -275,9 +275,21 @@ class NormalizedLedger:
                 total_usd=self._safe_decimal(w["amount_usd"]),
                 event_at=confirmed_at,
                 classification_rule="withdrawal — pending classification")
+            events += 1
+
+            # Fix 13: Create FEE_DISPOSAL for crypto withdrawal fees
+            fee = self._safe_decimal(w.get("fee", "0"))
+            if fee > ZERO:
+                await self._insert_event(session, run_id,
+                    source_withdrawal_id=wd_id, event_type="FEE_DISPOSAL",
+                    wallet=w["exchange"], asset=(w["asset"] or "").upper(),
+                    quantity=fee,
+                    total_usd=self._safe_decimal(w.get("fee_usd")),
+                    event_at=confirmed_at,
+                    classification_rule=f"network fee on withdrawal ({fee} {w['asset']})")
+                events += 1
 
             count += 1
-            events += 1
 
         return count, events
 

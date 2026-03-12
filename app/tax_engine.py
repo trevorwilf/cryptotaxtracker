@@ -5,7 +5,7 @@ Processes all trades chronologically:
   - BUYs create acquisition lots (asset, qty, cost_basis_usd, date)
   - SELLs consume lots in FIFO order, recording gain/loss per disposal
   - Partial lot consumption splits the lot
-  - Holding period determines short-term (<1yr) vs long-term (>=1yr)
+  - Holding period determines short-term (<=365 days) vs long-term (>365 days)
   - Fees are added to cost basis (buys) or subtracted from proceeds (sells)
   - Produces Form 8949 lines ready for Schedule D
 """
@@ -83,12 +83,26 @@ class TaxEngine:
         total_lots = sum(len(v) for v in lots_by_asset.values())
         logger.info(f"Loaded {total_lots} acquisition lots across {len(lots_by_asset)} assets")
 
+        # Fix 9: Sort each asset's lots globally by acquired_at for correct FIFO
+        for asset, lot_list in lots_by_asset.items():
+            lot_list.sort(key=lambda lot: (lot.acquired_at, lot.source_trade_id or 0))
+
         # Process all sells/disposals in chronological order
         disposals = await self._process_sells(session, lots_by_asset, year)
         logger.info(f"Processed {len(disposals)} disposals")
 
-        # Save lots and disposals
+        # Fix 10: Save lots first (gets IDs from DB), then backfill disposal lot_ids
         await self._save_lots(session, lots_by_asset)
+
+        # Backfill disposal lot_ids from saved lots
+        for d in disposals:
+            if d.lot_id is None and d.asset and d.acquired_at:
+                for lot in lots_by_asset.get(d.asset, []):
+                    if (lot.id and lot.acquired_at == d.acquired_at
+                            and lot.exchange == d.exchange):
+                        d.lot_id = lot.id
+                        break
+
         await self._save_disposals(session, disposals)
 
         # Generate Form 8949 lines
@@ -110,7 +124,7 @@ class TaxEngine:
             SELECT id, exchange, base_asset, quantity, total_usd, fee_usd, executed_at
             FROM tax.trades
             WHERE side = 'buy' AND quantity > 0
-            ORDER BY executed_at ASC
+            ORDER BY executed_at ASC, id ASC
         """))
         for row in result.fetchall():
             asset = row[2] or ""
@@ -138,7 +152,7 @@ class TaxEngine:
             WHERE amount > 0
               AND id NOT IN (SELECT deposit_id FROM tax.transfer_matches WHERE deposit_id IS NOT NULL)
               AND id NOT IN (SELECT deposit_id FROM tax.income_events WHERE deposit_id IS NOT NULL)
-            ORDER BY confirmed_at ASC
+            ORDER BY confirmed_at ASC, id ASC
         """))
         for row in result.fetchall():
             asset = row[2]
@@ -159,7 +173,7 @@ class TaxEngine:
             SELECT id, exchange, asset, amount, amount_usd, received_at
             FROM tax.income_events
             WHERE amount > 0
-            ORDER BY received_at ASC
+            ORDER BY received_at ASC, id ASC
         """))
         for row in result.fetchall():
             asset = row[2]
@@ -182,7 +196,7 @@ class TaxEngine:
             FROM tax.transfer_matches tm
             JOIN tax.deposits d ON d.id = tm.deposit_id
             WHERE tm.amount > 0
-            ORDER BY tm.transferred_at ASC
+            ORDER BY tm.transferred_at ASC, tm.id ASC
         """))
         for row in result.fetchall():
             asset = row[1]
@@ -213,7 +227,7 @@ class TaxEngine:
                    executed_at, side
             FROM tax.trades
             WHERE side = 'sell' AND quantity > 0 {year_filter}
-            ORDER BY executed_at ASC
+            ORDER BY executed_at ASC, id ASC
         """), params)
 
         disposals = []
@@ -273,7 +287,7 @@ class TaxEngine:
                     acquired_at=lot.acquired_at,
                     disposed_at=disposed_at,
                     holding_days=holding_days,
-                    term="long" if holding_days >= 365 else "short",
+                    term="long" if holding_days > 365 else "short",
                     exchange=exchange, market=market,
                     lot_id=lot.id, trade_id=trade_id,
                     description=f"{consumed} {asset}",

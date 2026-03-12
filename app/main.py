@@ -461,6 +461,7 @@ async def compute_taxes(year: int = Query(None)):
         async with db.get_session() as session:
             result = await tax_engine.compute(session, year=year)
         tax_compute_status = {"status": "success", **result}
+        result["WARNING"] = "v3 pipeline is NOT filing-safe. Use /v4/compute-all and /export/v4-tax-report for tax filing."
         return result
     except Exception as e:
         logger.exception(f"Tax computation failed: {e}")
@@ -478,6 +479,7 @@ async def compute_all(year: int = Query(None)):
         results["income"] = await income_classifier.classify(session)
     async with db.get_session() as session:
         results["tax"] = await tax_engine.compute(session, year=year)
+    results["WARNING"] = "v3 pipeline is NOT filing-safe. Use /v4/compute-all and /export/v4-tax-report for tax filing."
     return results
 
 
@@ -514,6 +516,7 @@ async def get_form_8949(year: int = Query(..., description="Tax year (required)"
         "long_term_net": str(lt_total),
         "net_total": str(st_total + lt_total),
         "lines": lines,
+        "WARNING": "v3 pipeline is NOT filing-safe. Use /v4/compute-all and /export/v4-tax-report for tax filing.",
     }
 
 
@@ -549,6 +552,7 @@ async def get_schedule_d(year: int = Query(...)):
             (D(row[2]) + D(row[5])) if row else D("0")
         ),
         "total_disposals": row[6] if row else 0,
+        "WARNING": "v3 pipeline is NOT filing-safe. Use /v4/compute-all and /export/v4-tax-report for tax filing.",
     }
 
 
@@ -692,24 +696,39 @@ async def v4_compute_all(year: int = Query(2025)):
             results["normalize"] = await ledger.decompose_all(session, run_id)
             await session.commit()
 
-        # Step 2: Match transfers
+        # Step 2: Create acquisition lots first (so transfer matcher can find them)
+        async with db.get_session() as session:
+            val = ValuationV4(exc)
+            engine = TaxEngineV4(exc, val)
+            acq_count = await engine.create_acquisition_lots(session, run_id)
+            results["acquisition_lots"] = acq_count
+            await session.commit()
+
+        # Step 3: Match and relocate transfers (lots now exist)
         async with db.get_session() as session:
             matcher = TransferMatcherV4()
             results["transfers"] = await matcher.match_and_relocate(session, exc, run_id)
             await session.commit()
 
-        # Step 3: Classify income
+        # Step 4: Classify income + create income lots
         async with db.get_session() as session:
             val = ValuationV4(exc)
             classifier = IncomeClassifierV4(exc, val)
             results["income"] = await classifier.classify(session, run_id)
             await session.commit()
 
-        # Step 4: FIFO computation
         async with db.get_session() as session:
             val = ValuationV4(exc)
             engine = TaxEngineV4(exc, val)
-            results["compute"] = await engine.compute(session, run_id, year=year)
+            inc_count = await engine.create_income_lots(session, run_id)
+            results["income_lots"] = inc_count
+            await session.commit()
+
+        # Step 5: Process disposals + Form 8949
+        async with db.get_session() as session:
+            val = ValuationV4(exc)
+            engine = TaxEngineV4(exc, val)
+            results["compute"] = await engine.process_disposals_and_report(session, run_id, year=year)
             await session.commit()
 
         # Flush exceptions
@@ -1119,12 +1138,12 @@ async def salvium_sync():
 
 
 @app.get("/export/v4-tax-report")
-async def export_v4_tax_report(year: int = Query(...)):
+async def export_v4_tax_report(year: int = Query(...), run_id: int = Query(None)):
     """Full accountant-ready XLSX from v4 engine."""
     try:
         async with db.get_session() as session:
-            from exports.tax_report import generate_full_tax_report
-            filepath = await generate_full_tax_report(session, year=year)
+            from exports.tax_report import generate_full_tax_report_v4
+            filepath = await generate_full_tax_report_v4(session, year=year, run_id=run_id)
         return FileResponse(
             filepath,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
