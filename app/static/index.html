@@ -454,7 +454,7 @@
 
   <!-- Account Balances -->
   <div class="card">
-    <div class="card-title">Account Balances</div>
+    <div class="card-title">Account Balances <span id="salviumLastRefresh" style="margin-left:auto;font-size:0.75rem;color:var(--text-dim);font-weight:400"></span></div>
     <div class="table-wrap">
       <table>
         <thead>
@@ -467,12 +467,42 @@
     </div>
   </div>
 
+  <!-- Wallet Outputs (UTXOs) -->
+  <div class="card">
+    <div class="card-title">Wallet Outputs (UTXOs)
+      <span style="margin-left:auto">
+        <select id="outputAccount" onchange="loadOutputs()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:0.8rem">
+          <option value="0">Account 0</option><option value="1">Account 1</option>
+        </select>
+      </span>
+    </div>
+    <div class="stat-grid" id="outputStats"></div>
+    <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+      <table>
+        <thead>
+          <tr><th>Amount (SAL)</th><th>Status</th><th>Block Height</th><th>TX Hash</th></tr>
+        </thead>
+        <tbody id="outputsTable">
+          <tr><td colspan="4" class="cell-dim">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Consolidate Funds -->
   <div class="card">
     <div class="card-title">Consolidate Funds</div>
     <div class="btn-row">
-      <button class="btn btn-secondary" onclick="doSweep(1, 0)">Sweep Account 1 &rarr; Account 0</button>
-      <button class="btn btn-secondary" onclick="doSweep(0, 1)">Sweep Account 0 &rarr; Account 1</button>
+      <button class="btn btn-secondary" onclick="doSweep(1, 0)">Sweep Acct 1 &rarr; 0</button>
+      <button class="btn btn-secondary" onclick="doSweep(0, 1)">Sweep Acct 0 &rarr; 1</button>
+      <div style="border-left:1px solid var(--border);height:30px"></div>
+      <div>
+        <label style="font-size:0.8rem;color:var(--text-secondary)">Consolidate outputs in:</label>
+        <select id="consolidateAccount" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:0.8rem">
+          <option value="0">Account 0</option><option value="1">Account 1</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary" onclick="doConsolidate()">Consolidate</button>
     </div>
     <div class="console" id="sweepConsole">Ready.</div>
   </div>
@@ -485,6 +515,7 @@
       <div><label>From Account</label><select id="stakeAccount"><option value="0">Account 0 (Primary)</option><option value="1">Account 1 (consolidate)</option></select></div>
       <button class="btn btn-purple" onclick="doStake()">Stake</button>
       <button class="btn btn-secondary" onclick="stakeAll()">Stake All Unlocked</button>
+      <button class="btn btn-primary" onclick="doStakeMax()">Stake Max</button>
     </div>
     <div class="console" id="stakeConsole">Enter amount and click Stake. Funds will be locked for ~30 days.</div>
   </div>
@@ -543,7 +574,8 @@ function showPage(id,btn){
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   if(btn)btn.classList.add('active');
-  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats,'sal-overview':function(){loadSalviumStatus();loadAccounts();}};
+  stopSalviumPoll();
+  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats,'sal-overview':startSalviumPoll};
   if(loaders[id])loaders[id]();
 }
 function fU(v){if(!v||v==='None'||v==='null')return'—';const n=parseFloat(v);if(isNaN(n))return'—';return(n>=1000?'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):n>=1?'$'+n.toFixed(2):'$'+n.toFixed(6));}
@@ -788,6 +820,38 @@ rows='<tr><td colspan="7" class="cell-dim">Use Sync to pull transactions, then c
 document.getElementById('salTxsTable').innerHTML=rows;}
 
 // ── Salvium Wallet Ops ──────────────────────────────────
+let salviumPollInterval=null;
+
+function startSalviumPoll(){
+  if(salviumPollInterval)return;
+  loadAccounts();
+  loadSalviumStatus();
+  loadOutputs();
+  salviumPollInterval=setInterval(()=>{
+    loadAccounts();
+    loadSalviumStatus();
+  },60000);
+}
+
+function stopSalviumPoll(){
+  if(salviumPollInterval){clearInterval(salviumPollInterval);salviumPollInterval=null;}
+}
+
+function updateLastRefresh(){
+  const el=document.getElementById('salviumLastRefresh');
+  if(el)el.textContent='Updated: '+new Date().toLocaleTimeString();
+}
+
+function triggerFastRefresh(){
+  let fastCount=0;
+  const fastInterval=setInterval(()=>{
+    loadAccounts();
+    loadOutputs();
+    fastCount++;
+    if(fastCount>=10){clearInterval(fastInterval);}
+  },3000);
+}
+
 async function loadAccounts(){
   const d=await api('/salvium/accounts');
   if(!d)return;
@@ -808,6 +872,36 @@ async function loadAccounts(){
     <td style="color:var(--amber)">${parseFloat(d.total_locked_sal).toLocaleString('en-US',{maximumFractionDigits:2})} SAL</td>
   </tr>`;
   document.getElementById('accountsTable').innerHTML=rows;
+  updateLastRefresh();
+}
+
+async function loadOutputs(){
+  const acct=document.getElementById('outputAccount').value;
+  const d=await api(`/salvium/outputs?account_index=${acct}`);
+  if(!d)return;
+  document.getElementById('outputStats').innerHTML=`
+    <div class="stat-card"><div class="stat-label">Available Outputs</div>
+      <div class="stat-value" style="color:var(--green)">${d.available_count}</div>
+      <div class="stat-sub">${parseFloat(d.total_available_sal).toLocaleString('en-US',{maximumFractionDigits:4})} SAL</div></div>
+    <div class="stat-card"><div class="stat-label">Locked Outputs</div>
+      <div class="stat-value" style="color:var(--amber)">${d.locked_count}</div>
+      <div class="stat-sub">${parseFloat(d.total_locked_sal).toLocaleString('en-US',{maximumFractionDigits:4})} SAL</div></div>
+    <div class="stat-card"><div class="stat-label">Total Outputs</div>
+      <div class="stat-value">${d.total_count}</div></div>`;
+  const outputs=d.outputs||[];
+  if(!outputs.length){document.getElementById('outputsTable').innerHTML='<tr><td colspan="4" class="cell-dim">No outputs</td></tr>';return;}
+  let rows='';
+  outputs.forEach(o=>{
+    const status=o.unlocked?'<span class="badge badge-green">available</span>':'<span class="badge badge-amber">locked</span>';
+    const amt=parseFloat(o.amount_sal);
+    rows+=`<tr>
+      <td style="font-weight:600">${amt.toLocaleString('en-US',{maximumFractionDigits:8})} SAL</td>
+      <td>${status}</td>
+      <td class="cell-dim">${o.block_height||'\u2014'}</td>
+      <td class="cell-dim" title="${o.tx_hash}">${(o.tx_hash||'').substring(0,16)}...</td>
+    </tr>`;
+  });
+  document.getElementById('outputsTable').innerHTML=rows;
 }
 
 async function doSweep(from,to){
@@ -819,7 +913,26 @@ async function doSweep(from,to){
     if(r.ok){
       el.innerHTML+=`<div class="log-ok">Success! TX: ${(d.tx_hashes||[]).join(', ')}</div>`;
       el.innerHTML+=`<div class="log-ok">Amount: ${(d.amounts_sal||[]).join(' + ')} SAL | Fee: ${(d.fees_sal||[]).join(' + ')} SAL</div>`;
-      setTimeout(loadAccounts,5000);
+      triggerFastRefresh();
+    }else{
+      el.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;
+    }
+  }catch(e){
+    el.innerHTML+=`<div class="log-err">Error: ${e}</div>`;
+  }
+}
+
+async function doConsolidate(){
+  const acct=document.getElementById('consolidateAccount').value;
+  const el=document.getElementById('sweepConsole');
+  el.innerHTML=`<span class="log-info">Consolidating outputs in account ${acct}...</span>`;
+  try{
+    const r=await fetch(`/salvium/consolidate?account_index=${acct}`,{method:'POST'});
+    const d=await r.json();
+    if(r.ok){
+      el.innerHTML+=`<div class="log-ok">Consolidated! TX: ${(d.tx_hashes||[]).join(', ')}</div>`;
+      el.innerHTML+=`<div class="log-ok">Amount: ${(d.amounts_sal||[]).join(' + ')} SAL | Fee: ${(d.fees_sal||[]).join(' + ')} SAL</div>`;
+      triggerFastRefresh();
     }else{
       el.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;
     }
@@ -840,7 +953,26 @@ async function doStake(){
     if(r.ok){
       el.innerHTML+=`<div class="log-ok">Staked! TX: ${d.tx_hash}</div>`;
       el.innerHTML+=`<div class="log-ok">Fee: ${d.fee_sal} SAL | Lock: ${d.lock_period}</div>`;
-      setTimeout(loadAccounts,5000);
+      triggerFastRefresh();
+    }else{
+      el.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;
+    }
+  }catch(e){
+    el.innerHTML+=`<div class="log-err">Error: ${e}</div>`;
+  }
+}
+
+async function doStakeMax(){
+  const acct=document.getElementById('stakeAccount').value;
+  const el=document.getElementById('stakeConsole');
+  el.innerHTML='<span class="log-info">Calculating max stake amount (estimating fees)...</span>';
+  try{
+    const r=await fetch(`/salvium/stake-max?account_index=${acct}`,{method:'POST'});
+    const d=await r.json();
+    if(r.ok){
+      el.innerHTML+=`<div class="log-ok">Staked ${d.staked_sal} SAL! TX: ${d.tx_hash}</div>`;
+      el.innerHTML+=`<div class="log-ok">Fee: ${d.fee_sal} SAL | Lock: ${d.lock_period}</div>`;
+      triggerFastRefresh();
     }else{
       el.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;
     }

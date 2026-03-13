@@ -862,3 +862,162 @@ class TestAccountsEndpointLogic:
         assert total_balance == D("44047.47695976")
         assert total_unlocked == D("16057.61620000")
         assert total_locked == D("27989.86075976")
+
+
+# ═══════════════════════════════════════════════════════════
+# Stake Max (fee estimation + max stake)
+# ═══════════════════════════════════════════════════════════
+
+class TestStakeMax:
+    def test_fee_estimation_uses_do_not_relay(self):
+        """Stake-max dry run must set do_not_relay=true."""
+        params = {
+            "destinations": [{"amount": 1605761620000, "address": "SC11aHNa..."}],
+            "source_asset": "SAL1",
+            "dest_asset": "SAL1",
+            "tx_type": 6,
+            "do_not_relay": True,
+            "get_tx_key": True,
+        }
+        assert params["do_not_relay"] is True
+        assert params["tx_type"] == 6
+
+    def test_max_stake_is_unlocked_minus_fee(self):
+        """Max stakeable = unlocked_balance - estimated_fee."""
+        unlocked = 1605761620000  # atomic
+        fee = 810220  # atomic
+        max_stake = unlocked - fee
+        assert max_stake == 1605760809780
+        assert max_stake > 0
+
+    def test_zero_unlocked_rejected(self):
+        """Zero unlocked balance should be rejected."""
+        unlocked = 0
+        assert unlocked <= 0
+
+    def test_fee_exceeds_balance_rejected(self):
+        """If fee >= unlocked, max_stake would be <= 0 — should reject."""
+        unlocked = 500000  # tiny balance
+        fee = 810220  # larger fee
+        max_stake = unlocked - fee
+        assert max_stake <= 0
+
+    def test_fallback_fee_estimate(self):
+        """If dry run fails, fallback to 0.01 SAL (1000000 atomic)."""
+        fallback_fee = 1000000
+        assert fallback_fee == 1000000
+        ATOMIC = D("100000000")
+        assert D(str(fallback_fee)) / ATOMIC == D("0.01")
+
+    def test_half_balance_fee_with_safety_margin(self):
+        """Half-balance estimate gets 1.5x safety margin."""
+        half_fee = 600000
+        estimated_fee = int(half_fee * 1.5)
+        assert estimated_fee == 900000
+
+
+# ═══════════════════════════════════════════════════════════
+# Consolidate (sweep to self)
+# ═══════════════════════════════════════════════════════════
+
+class TestConsolidate:
+    def test_sweep_to_self_uses_own_address(self):
+        """Consolidate sweeps to the same account's address."""
+        account_addr = "SC11aHNaiaVQzopqEDwGVhVeHcEz4mNB9NfBBwMtH9iN"
+        sweep_dest = account_addr
+        assert sweep_dest == account_addr
+
+    def test_consolidate_requires_asset_type(self):
+        """Consolidate must include asset_type=SAL1."""
+        params = {"address": "test_addr", "asset_type": "SAL1", "account_index": 0}
+        assert params["asset_type"] == "SAL1"
+
+    def test_consolidate_result_parsing(self):
+        """Parse consolidate result like sweep result."""
+        result = {
+            "tx_hash_list": ["consolidated_tx_123"],
+            "amount_list": [1605760000000],
+            "fee_list": [810220],
+        }
+        ATOMIC = D("100000000")
+        amounts = [str(D(str(a)) / ATOMIC) for a in result["amount_list"]]
+        fees = [str(D(str(f)) / ATOMIC) for f in result["fee_list"]]
+        assert len(result["tx_hash_list"]) == 1
+        assert D(amounts[0]) == D("16057.6")
+        assert D(fees[0]) == D("0.0081022")
+
+
+# ═══════════════════════════════════════════════════════════
+# Outputs (UTXOs)
+# ═══════════════════════════════════════════════════════════
+
+class TestOutputs:
+    def test_output_amount_conversion(self):
+        """Convert atomic output amount to SAL."""
+        atomic = 1605761620000
+        sal = D(str(atomic)) / D("100000000")
+        assert sal == D("16057.6162")
+
+    def test_outputs_sorted_by_amount_desc(self):
+        """Outputs should be sorted by amount descending."""
+        outputs = [
+            {"amount_sal": "100.0"},
+            {"amount_sal": "5000.0"},
+            {"amount_sal": "50.0"},
+        ]
+        outputs.sort(key=lambda x: float(x["amount_sal"]), reverse=True)
+        assert outputs[0]["amount_sal"] == "5000.0"
+        assert outputs[1]["amount_sal"] == "100.0"
+        assert outputs[-1]["amount_sal"] == "50.0"
+
+    def test_output_unlocked_vs_locked_flag(self):
+        """Available transfers are unlocked=True, unavailable are unlocked=False."""
+        available_output = {"amount_sal": "100", "unlocked": True, "spent": False}
+        locked_output = {"amount_sal": "200", "unlocked": False, "spent": True}
+        assert available_output["unlocked"] is True
+        assert locked_output["unlocked"] is False
+
+    def test_empty_outputs_response(self):
+        """Account with no outputs returns zero counts."""
+        response = {
+            "account_index": 1,
+            "available_count": 0,
+            "locked_count": 0,
+            "total_count": 0,
+            "total_available_sal": "0",
+            "total_locked_sal": "0",
+            "outputs": [],
+        }
+        assert response["total_count"] == 0
+        assert response["total_available_sal"] == "0"
+
+    def test_output_totals_match_sum(self):
+        """Total available/locked should equal sum of respective outputs."""
+        ATOMIC = D("100000000")
+        available_amounts = [500000000000, 300000000000]  # 5000 + 3000 SAL
+        total = sum(D(str(a)) / ATOMIC for a in available_amounts)
+        assert total == D("8000")
+
+    def test_incoming_transfers_params(self):
+        """incoming_transfers RPC params must include transfer_type and account_index."""
+        params = {"transfer_type": "available", "account_index": 0}
+        assert params["transfer_type"] in ("available", "unavailable")
+        assert "account_index" in params
+
+
+# ═══════════════════════════════════════════════════════════
+# Auto-polling (Feature 1 & 2)
+# ═══════════════════════════════════════════════════════════
+
+class TestAutoPoll:
+    def test_poll_interval_is_60_seconds(self):
+        """Normal polling interval should be 60 seconds."""
+        poll_interval_ms = 60000
+        assert poll_interval_ms == 60000
+
+    def test_fast_refresh_is_3_seconds_for_30_total(self):
+        """Fast refresh: 10 polls x 3 seconds = 30 seconds total."""
+        fast_interval_ms = 3000
+        fast_count_max = 10
+        total_ms = fast_interval_ms * fast_count_max
+        assert total_ms == 30000

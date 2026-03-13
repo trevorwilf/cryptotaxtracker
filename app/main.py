@@ -1258,6 +1258,216 @@ async def salvium_stake(
     }
 
 
+@app.post("/salvium/stake-max")
+async def salvium_stake_max(account_index: int = Query(0)):
+    """Stake the maximum possible SAL by estimating fees first."""
+    ex = get_exchange("salvium", settings)
+    if not ex:
+        raise HTTPException(503, "Salvium not configured")
+
+    from decimal import Decimal as D
+    ATOMIC = D("100000000")
+
+    # 1. Get unlocked balance for this account
+    accounts = await ex._rpc("get_accounts")
+    if "error" in accounts:
+        raise HTTPException(502, f"Wallet RPC error: {accounts['error']}")
+    accts = accounts.get("subaddress_accounts", [])
+    own_addr = None
+    unlocked_atomic = 0
+    for a in accts:
+        if a["account_index"] == account_index:
+            own_addr = a["base_address"]
+            unlocked_atomic = a.get("unlocked_balance", 0)
+            break
+    if not own_addr:
+        raise HTTPException(400, f"Account {account_index} not found")
+    if unlocked_atomic <= 0:
+        raise HTTPException(400, "No unlocked funds available to stake")
+
+    # 2. Estimate fee with a dry-run stake of the full unlocked amount
+    estimate = await ex._rpc("transfer", {
+        "destinations": [{"amount": unlocked_atomic, "address": own_addr}],
+        "source_asset": "SAL1",
+        "dest_asset": "SAL1",
+        "tx_type": 6,
+        "account_index": account_index,
+        "do_not_relay": True,
+        "get_tx_key": True,
+    })
+
+    # The dry run may fail because amount + fee > balance
+    estimated_fee = 0
+    if isinstance(estimate, dict) and "fee" in estimate:
+        estimated_fee = estimate["fee"]
+    else:
+        # Dry run failed — try with half the balance to get a fee estimate
+        half_estimate = await ex._rpc("transfer", {
+            "destinations": [{"amount": unlocked_atomic // 2, "address": own_addr}],
+            "source_asset": "SAL1",
+            "dest_asset": "SAL1",
+            "tx_type": 6,
+            "account_index": account_index,
+            "do_not_relay": True,
+            "get_tx_key": True,
+        })
+        if isinstance(half_estimate, dict) and "fee" in half_estimate:
+            estimated_fee = int(half_estimate["fee"] * 1.5)
+        else:
+            estimated_fee = 1000000  # 0.01 SAL fallback
+
+    # 3. Calculate max stakeable amount
+    max_stake_atomic = unlocked_atomic - estimated_fee
+    if max_stake_atomic <= 0:
+        raise HTTPException(400, f"Unlocked balance ({D(str(unlocked_atomic)) / ATOMIC} SAL) is less than estimated fee ({D(str(estimated_fee)) / ATOMIC} SAL)")
+
+    # 4. Actually stake it
+    result = await ex._rpc("transfer", {
+        "destinations": [{"amount": max_stake_atomic, "address": own_addr}],
+        "source_asset": "SAL1",
+        "dest_asset": "SAL1",
+        "tx_type": 6,
+        "account_index": account_index,
+        "get_tx_key": True,
+    })
+
+    if not isinstance(result, dict) or "tx_hash" not in result:
+        error_msg = "Unknown error"
+        if isinstance(result, dict) and "error" in result:
+            error_msg = result["error"].get("message", error_msg)
+        raise HTTPException(400, f"Stake-max failed: {error_msg}")
+
+    actual_fee = D(str(result.get("fee", 0))) / ATOMIC
+    staked_sal = D(str(max_stake_atomic)) / ATOMIC
+
+    return {
+        "status": "success",
+        "staked_sal": str(staked_sal),
+        "fee_sal": str(actual_fee),
+        "account_index": account_index,
+        "tx_hash": result.get("tx_hash", ""),
+        "lock_period": "~30 days (21,600 blocks)",
+    }
+
+
+@app.post("/salvium/consolidate")
+async def salvium_consolidate(account_index: int = Query(0)):
+    """Consolidate all outputs in an account by sweeping to self."""
+    ex = get_exchange("salvium", settings)
+    if not ex:
+        raise HTTPException(503, "Salvium not configured")
+
+    # Get own address for this account
+    accounts = await ex._rpc("get_accounts")
+    if "error" in accounts:
+        raise HTTPException(502, f"Wallet RPC error: {accounts['error']}")
+    accts = accounts.get("subaddress_accounts", [])
+    own_addr = None
+    for a in accts:
+        if a["account_index"] == account_index:
+            own_addr = a["base_address"]
+            break
+    if not own_addr:
+        raise HTTPException(400, f"Account {account_index} not found")
+
+    result = await ex._rpc("sweep_all", {
+        "address": own_addr,
+        "asset_type": "SAL1",
+        "account_index": account_index,
+    })
+
+    if not isinstance(result, dict) or "tx_hash_list" not in result:
+        error_msg = "No usable outputs to consolidate"
+        if isinstance(result, dict) and "error" in result:
+            error_msg = result["error"].get("message", error_msg)
+        raise HTTPException(400, f"Consolidate failed: {error_msg}")
+
+    from decimal import Decimal as D
+    ATOMIC = D("100000000")
+    amounts = [str(D(str(a)) / ATOMIC) for a in result.get("amount_list", [])]
+    fees = [str(D(str(f)) / ATOMIC) for f in result.get("fee_list", [])]
+
+    return {
+        "status": "success",
+        "account_index": account_index,
+        "tx_hashes": result.get("tx_hash_list", []),
+        "amounts_sal": amounts,
+        "fees_sal": fees,
+        "note": "Outputs consolidated into a single UTXO",
+    }
+
+
+@app.get("/salvium/outputs")
+async def salvium_outputs(account_index: int = Query(0)):
+    """Get all unspent outputs for an account."""
+    ex = get_exchange("salvium", settings)
+    if not ex:
+        raise HTTPException(503, "Salvium not configured")
+
+    from decimal import Decimal as D
+    ATOMIC = D("100000000")
+
+    # Get available (unlocked) transfers
+    result = await ex._rpc("incoming_transfers", {
+        "transfer_type": "available",
+        "account_index": account_index,
+    })
+    available = result.get("transfers", []) if isinstance(result, dict) else []
+
+    # Get unavailable (locked/spent) transfers
+    locked_result = await ex._rpc("incoming_transfers", {
+        "transfer_type": "unavailable",
+        "account_index": account_index,
+    })
+    locked = locked_result.get("transfers", []) if isinstance(locked_result, dict) else []
+
+    outputs = []
+    total_available = D("0")
+    total_locked = D("0")
+
+    for t in available:
+        amount_sal = D(str(t.get("amount", 0))) / ATOMIC
+        total_available += amount_sal
+        outputs.append({
+            "amount_sal": str(amount_sal),
+            "amount_atomic": t.get("amount", 0),
+            "key_image": t.get("key_image", ""),
+            "tx_hash": t.get("tx_hash", ""),
+            "subaddr_index": t.get("subaddr_index", 0),
+            "block_height": t.get("block_height", 0),
+            "frozen": t.get("frozen", False),
+            "unlocked": True,
+            "spent": False,
+        })
+
+    for t in locked:
+        amount_sal = D(str(t.get("amount", 0))) / ATOMIC
+        total_locked += amount_sal
+        outputs.append({
+            "amount_sal": str(amount_sal),
+            "amount_atomic": t.get("amount", 0),
+            "key_image": t.get("key_image", ""),
+            "tx_hash": t.get("tx_hash", ""),
+            "subaddr_index": t.get("subaddr_index", 0),
+            "block_height": t.get("block_height", 0),
+            "frozen": t.get("frozen", False),
+            "unlocked": False,
+            "spent": True,
+        })
+
+    outputs.sort(key=lambda x: float(x["amount_sal"]), reverse=True)
+
+    return {
+        "account_index": account_index,
+        "available_count": len(available),
+        "locked_count": len(locked),
+        "total_count": len(outputs),
+        "total_available_sal": str(total_available),
+        "total_locked_sal": str(total_locked),
+        "outputs": outputs,
+    }
+
+
 @app.post("/salvium/sync")
 async def salvium_sync():
     """Manual sync of Salvium wallet transactions + staking pair detection."""
