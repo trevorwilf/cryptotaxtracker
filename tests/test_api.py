@@ -169,3 +169,76 @@ class TestSummaryEndpoint:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.get("/summary")
             assert r.status_code == 200
+
+
+# ── V4 Accountant Handoff Endpoints ─────────────────────────────────────
+
+class TestV4PnlByExchange:
+    @pytest.mark.asyncio
+    async def test_pnl_by_exchange_returns_list(self, app_with_mocks):
+        app, session = app_with_mocks
+        session.execute.return_value = MagicMock(
+            fetchall=lambda: [], keys=lambda: [])
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/v4/pnl-by-exchange?year=2025")
+            assert r.status_code == 200
+            assert isinstance(r.json(), list)
+
+    @pytest.mark.asyncio
+    async def test_pnl_by_exchange_requires_year(self, app_with_mocks):
+        app, _ = app_with_mocks
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/v4/pnl-by-exchange")
+            assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_pnl_empty_year_returns_empty(self, app_with_mocks):
+        app, session = app_with_mocks
+        session.execute.return_value = MagicMock(
+            fetchall=lambda: [], keys=lambda: [])
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/v4/pnl-by-exchange?year=2020")
+            assert r.status_code == 200
+            assert r.json() == []
+
+
+class TestV4DataCoverage:
+    @pytest.mark.asyncio
+    async def test_data_coverage_returns_200(self, app_with_mocks):
+        app, session = app_with_mocks
+        session.execute.return_value = MagicMock(
+            fetchall=lambda: [], keys=lambda: [])
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/v4/data-coverage")
+            assert r.status_code == 200
+
+
+class TestV4FundingByExchange:
+    @pytest.mark.asyncio
+    async def test_funding_returns_200(self, app_with_mocks):
+        app, session = app_with_mocks
+        session.execute.return_value = MagicMock(
+            fetchall=lambda: [], keys=lambda: [])
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/v4/funding-by-exchange")
+            assert r.status_code == 200
+
+
+class TestV4CsvImports:
+    @pytest.mark.asyncio
+    async def test_csv_imports_list_returns_200(self, app_with_mocks):
+        app, session = app_with_mocks
+        session.execute.return_value = MagicMock(
+            fetchall=lambda: [], keys=lambda: [])
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/v4/csv-imports")
+            assert r.status_code == 200
+            data = r.json()
+            assert "count" in data
+            assert "imports" in data

@@ -14,8 +14,9 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from urllib.parse import urlencode
 
@@ -25,6 +26,14 @@ from exchanges import BaseExchange, register
 
 logger = logging.getLogger("tax-collector.mexc")
 BASE_URL = "https://api.mexc.com"
+
+MEXC_RETENTION = {
+    "myTrades": {"days": 30, "description": "Trade history"},
+    "allOrders": {"days": 7, "description": "Order history"},
+    "deposit_history": {"days": 90, "description": "Deposit history"},
+    "withdraw_history": {"days": 90, "description": "Withdrawal history"},
+    "universal_transfer": {"days": 180, "description": "Universal transfer history"},
+}
 
 
 @register
@@ -76,8 +85,14 @@ class MEXCExchange(BaseExchange):
         return datetime.now(timezone.utc)
 
     async def _get_traded_symbols(self) -> list[str]:
-        """Discover symbols by checking account balances for non-zero assets."""
+        """Discover symbols from balances AND from env-configured extras.
+
+        Current-balance-only discovery misses fully-exited positions.
+        We supplement with any symbols from MEXC_EXTRA_SYMBOLS env var.
+        """
         symbols = set()
+
+        # 1. Current balances (existing logic)
         try:
             account = await self._get("/api/v3/account", {})
             if isinstance(account, dict):
@@ -92,9 +107,66 @@ class MEXCExchange(BaseExchange):
         except Exception as e:
             logger.warning(f"MEXC account lookup failed: {e}")
 
+        # 2. Previously known symbols from env
+        extra = os.environ.get("MEXC_EXTRA_SYMBOLS", "")
+        if extra:
+            for sym in extra.split(","):
+                sym = sym.strip().upper()
+                if sym:
+                    symbols.add(sym)
+            logger.info(f"Added extra symbols from MEXC_EXTRA_SYMBOLS")
+
         if not symbols:
             logger.warning("No traded symbols found on MEXC — skipping trade fetch")
         return list(symbols)
+
+    def get_data_coverage(self, since: datetime | None = None) -> dict:
+        """Return metadata about what date ranges the API can actually cover."""
+        now = datetime.now(timezone.utc)
+        coverage = {}
+        for endpoint, info in MEXC_RETENTION.items():
+            earliest_available = now - timedelta(days=info["days"])
+            requested_start = since or datetime(2020, 1, 1, tzinfo=timezone.utc)
+            has_gap = requested_start < earliest_available
+            coverage[endpoint] = {
+                "description": info["description"],
+                "retention_days": info["days"],
+                "earliest_available": earliest_available.isoformat(),
+                "requested_start": requested_start.isoformat(),
+                "has_gap": has_gap,
+                "gap_days": (earliest_available - requested_start).days if has_gap else 0,
+                "requires_csv_import": has_gap,
+            }
+        return coverage
+
+    async def fetch_transfers(self, since: datetime | None = None) -> list[dict]:
+        """Fetch MEXC universal transfer history (internal account transfers)."""
+        params = {"limit": 500}
+        if since:
+            params["startTime"] = str(int(since.timestamp() * 1000))
+        try:
+            raw = await self._get("/api/v3/capital/transfer", params)
+        except Exception as e:
+            logger.warning(f"Universal transfer fetch failed: {e}")
+            return []
+        if isinstance(raw, dict):
+            raw = raw.get("rows", raw.get("data", []))
+        if not isinstance(raw, list):
+            return []
+        transfers = []
+        for t in raw:
+            transfers.append({
+                "exchange": self.name,
+                "exchange_id": str(t.get("tranId", "")),
+                "asset": t.get("asset", ""),
+                "amount": str(t.get("amount", "0")),
+                "from_account": t.get("fromAccountType", ""),
+                "to_account": t.get("toAccountType", ""),
+                "status": t.get("status", ""),
+                "timestamp": self._parse_ts(t.get("timestamp")),
+                "raw_data": json.dumps(t),
+            })
+        return transfers
 
     async def fetch_trades(self, since: datetime | None = None) -> list[dict]:
         symbols = await self._get_traded_symbols()

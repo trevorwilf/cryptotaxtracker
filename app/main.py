@@ -731,11 +731,46 @@ async def v4_compute_all(year: int = Query(2025)):
             results["compute"] = await engine.process_disposals_and_report(session, run_id, year=year)
             await session.commit()
 
+        # Step 6: Check data coverage gaps (stop-ship)
+        blockers = []
+        warnings_list = []
+        try:
+            from exchanges.mexc import MEXCExchange, MEXC_RETENTION
+            mexc_ex = get_exchange("mexc", settings)
+            if mexc_ex and isinstance(mexc_ex, MEXCExchange):
+                tax_year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+                coverage = mexc_ex.get_data_coverage(since=tax_year_start)
+                for endpoint, info in coverage.items():
+                    if info["has_gap"]:
+                        # Check if CSV import covers the gap
+                        async with db.get_session() as session:
+                            from sqlalchemy import text as t
+                            r = await session.execute(t("""
+                                SELECT COUNT(*) FROM tax.csv_imports
+                                WHERE exchange = 'mexc' AND date_range_start <= :start
+                            """), {"start": tax_year_start})
+                            csv_covers = (r.scalar() or 0) > 0
+
+                        if not csv_covers:
+                            msg = (f"BLOCKING: MEXC {info['description']} only covers last "
+                                   f"{info['retention_days']} days. Tax year {year} requires "
+                                   f"data from {year}-01-01. Import official MEXC CSV exports.")
+                            blockers.append(msg)
+                            exc.log("BLOCKING", "DATA_COVERAGE_GAP", msg,
+                                    tax_year=year, blocks_filing=True)
+        except Exception as e:
+            logger.warning(f"Data coverage check failed: {e}")
+
         # Flush exceptions
         async with db.get_session() as session:
             exc_count = await exc.flush(session)
             filing_status = await ExceptionManager.check_filing_ready(session, year)
             await session.commit()
+
+        # Override filing_ready if blockers found
+        if blockers:
+            filing_status["filing_ready"] = False
+            filing_status["blockers"] = blockers
 
         # Update manifest
         async with db.get_session() as session:
@@ -754,6 +789,9 @@ async def v4_compute_all(year: int = Query(2025)):
         results["run_id"] = run_id
         results["exceptions_logged"] = exc_count
         results["filing_status"] = filing_status
+        results["filing_ready"] = filing_status["filing_ready"]
+        results["blockers"] = blockers
+        results["warnings"] = warnings_list
         return results
 
     except Exception as e:
@@ -1056,6 +1094,141 @@ async def v4_run_history():
         """))
         runs = [dict(zip(r.keys(), row)) for row in r.fetchall()]
     return {"count": len(runs), "runs": runs}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ACCOUNTANT HANDOFF ENDPOINTS (Phases 2-7)
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.get("/v4/data-coverage")
+async def v4_data_coverage(year: int = Query(None)):
+    """Show what date ranges each exchange's API covers and identify gaps."""
+    from exchanges.mexc import MEXCExchange, MEXC_RETENTION
+    since = datetime(year, 1, 1, tzinfo=timezone.utc) if year else None
+    mexc_ex = get_exchange("mexc", settings)
+    coverage = {}
+    if mexc_ex and isinstance(mexc_ex, MEXCExchange):
+        coverage["mexc"] = mexc_ex.get_data_coverage(since=since)
+
+    # Check if CSV imports cover any gaps
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT exchange, data_type, date_range_start, date_range_end
+            FROM tax.csv_imports
+            ORDER BY exchange, data_type
+        """))
+        csv_imports = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    coverage["csv_imports"] = csv_imports
+    return coverage
+
+
+@app.post("/v4/import-csv")
+async def import_csv(exchange: str = Query(...), data_type: str = Query("trades"),
+                     filepath: str = Query(...)):
+    """Import a CSV file to supplement API data.
+
+    Accepts a server-side filepath (upload the file to the server first).
+    """
+    from csv_importer import CSVImporter
+
+    if not os.path.exists(filepath):
+        raise HTTPException(400, f"File not found: {filepath}")
+
+    importer = CSVImporter()
+    async with db.get_session() as session:
+        if exchange.lower() == "mexc" and data_type == "trades":
+            result = await importer.import_mexc_trades(session, filepath)
+        elif exchange.lower() == "mexc" and data_type == "deposits":
+            result = await importer.import_mexc_deposits(session, filepath)
+        elif exchange.lower() == "mexc" and data_type == "withdrawals":
+            result = await importer.import_mexc_withdrawals(session, filepath)
+        else:
+            result = await importer.import_generic(session, filepath, exchange, data_type, {})
+        await session.commit()
+    return result
+
+
+@app.get("/v4/csv-imports")
+async def list_csv_imports():
+    """List all CSV imports with metadata."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT id, exchange, data_type, filename, file_hash, row_count,
+                   imported_count, duplicate_count, error_count,
+                   date_range_start, date_range_end, imported_at, imported_by
+            FROM tax.csv_imports ORDER BY imported_at DESC
+        """))
+        imports = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return {"count": len(imports), "imports": imports}
+
+
+@app.post("/v4/classify-flows")
+async def v4_classify_flows(run_id: int = Query(None)):
+    """Classify all deposits/withdrawals into funding flow categories."""
+    from flow_classifier import FlowClassifier
+    classifier = FlowClassifier()
+    async with db.get_session() as session:
+        result = await classifier.classify_all(session, run_id)
+        await session.commit()
+    return result
+
+
+@app.get("/v4/funding-by-exchange")
+async def v4_funding_by_exchange(year: int = Query(None)):
+    """Return classified funding flows grouped by exchange."""
+    where = "WHERE 1=1"
+    params: dict = {}
+    if year:
+        where += " AND EXTRACT(YEAR FROM event_at) = :year"
+        params["year"] = year
+
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"""
+            SELECT exchange,
+                COALESCE(SUM(CASE WHEN flow_class = 'EXTERNAL_DEPOSIT' THEN total_usd END), 0)::text AS external_in_usd,
+                COALESCE(SUM(CASE WHEN flow_class = 'EXTERNAL_WITHDRAWAL' THEN total_usd END), 0)::text AS external_out_usd,
+                COALESCE(SUM(CASE WHEN flow_class IN ('EXTERNAL_DEPOSIT') THEN total_usd ELSE 0 END)
+                    - SUM(CASE WHEN flow_class IN ('EXTERNAL_WITHDRAWAL') THEN total_usd ELSE 0 END), 0)::text AS net_external_funding_usd,
+                COALESCE(SUM(CASE WHEN flow_class = 'INTERNAL_TRANSFER_IN' THEN total_usd END), 0)::text AS internal_in_usd,
+                COALESCE(SUM(CASE WHEN flow_class = 'INTERNAL_TRANSFER_OUT' THEN total_usd END), 0)::text AS internal_out_usd,
+                COALESCE(SUM(CASE WHEN flow_class = 'INCOME_RECEIPT' THEN total_usd END), 0)::text AS income_in_usd,
+                COALESCE(SUM(CASE WHEN flow_class = 'UNCLASSIFIED' THEN total_usd END), 0)::text AS unclassified_usd
+            FROM tax.classified_flows
+            {where}
+            GROUP BY exchange ORDER BY exchange
+        """), params)
+        rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return rows
+
+
+@app.get("/v4/pnl-by-exchange")
+async def v4_pnl_by_exchange(year: int = Query(...)):
+    """Realized P&L summary grouped by exchange for accountant review."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT
+                exchange,
+                COUNT(*) AS disposal_count,
+                COALESCE(SUM(proceeds), 0)::text AS total_proceeds_usd,
+                COALESCE(SUM(cost_basis), 0)::text AS total_basis_usd,
+                COALESCE(SUM(CASE WHEN term = 'short' THEN proceeds END), 0)::text AS st_proceeds,
+                COALESCE(SUM(CASE WHEN term = 'short' THEN cost_basis END), 0)::text AS st_basis,
+                COALESCE(SUM(CASE WHEN term = 'short' THEN gain_loss END), 0)::text AS st_net,
+                COALESCE(SUM(CASE WHEN term = 'long' THEN proceeds END), 0)::text AS lt_proceeds,
+                COALESCE(SUM(CASE WHEN term = 'long' THEN cost_basis END), 0)::text AS lt_basis,
+                COALESCE(SUM(CASE WHEN term = 'long' THEN gain_loss END), 0)::text AS lt_net,
+                COALESCE(SUM(gain_loss), 0)::text AS total_net_usd
+            FROM tax.form_8949_v4
+            WHERE tax_year = :year
+            GROUP BY exchange
+            ORDER BY exchange
+        """), {"year": year})
+        rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return rows
 
 
 # ══════════════════════════════════════════════════════════════════════════

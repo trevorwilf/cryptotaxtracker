@@ -136,14 +136,19 @@ class NonKYCExchange(BaseExchange):
                 "exchange": self.name,
                 "exchange_id": str(d.get("id", d.get("depositId", ""))),
                 "asset": d.get("ticker", d.get("asset", d.get("currency", ""))),
-                "amount": str(d.get("amount", "0")),
+                "child_asset": d.get("childticker", ""),
+                "amount": str(d.get("quantity", d.get("amount", "0"))),  # quantity FIRST (official API field)
                 "network": d.get("network", ""),
-                "tx_hash": d.get("txHash", d.get("txid", "")),
+                "tx_hash": d.get("transactionid", d.get("txHash", d.get("txid", ""))),  # transactionid FIRST
                 "address": d.get("address", ""),
+                "payment_id": d.get("paymentid", ""),
                 "status": d.get("status", ""),
+                "confirmations": d.get("confirmations"),
+                "is_posted": d.get("isposted"),
+                "is_reversed": d.get("isreversed"),
                 "asset_price_usd": None, "amount_usd": None,
                 "confirmed_at": self._parse_ts(
-                    d.get("confirmedAt", d.get("timestamp", d.get("createdAt")))),
+                    d.get("firstseenat", d.get("confirmedAt", d.get("timestamp", d.get("createdAt"))))),  # firstseenat FIRST
                 "raw_data": json.dumps(d),
             })
         return deposits
@@ -161,15 +166,20 @@ class NonKYCExchange(BaseExchange):
                 "exchange": self.name,
                 "exchange_id": str(w.get("id", w.get("withdrawalId", ""))),
                 "asset": w.get("ticker", w.get("asset", w.get("currency", ""))),
-                "amount": str(w.get("amount", "0")),
+                "child_asset": w.get("childticker", ""),
+                "amount": str(w.get("quantity", w.get("amount", "0"))),  # quantity FIRST (official API field)
                 "fee": str(w.get("fee", "0")),
+                "fee_currency": w.get("feecurrency", w.get("fee_asset", "")),
                 "network": w.get("network", ""),
-                "tx_hash": w.get("txHash", w.get("txid", "")),
+                "tx_hash": w.get("transactionid", w.get("txHash", w.get("txid", ""))),  # transactionid FIRST
                 "address": w.get("address", ""),
+                "payment_id": w.get("paymentid", ""),
                 "status": w.get("status", ""),
+                "is_sent": w.get("issent"),
+                "is_confirmed": w.get("isconfirmed"),
                 "asset_price_usd": None, "amount_usd": None, "fee_usd": None,
                 "confirmed_at": self._parse_ts(
-                    w.get("confirmedAt", w.get("timestamp", w.get("createdAt")))),
+                    w.get("requestedat", w.get("sentat", w.get("confirmedAt", w.get("timestamp", w.get("createdAt")))))),  # requestedat FIRST
                 "raw_data": json.dumps(w),
             })
         return withdrawals

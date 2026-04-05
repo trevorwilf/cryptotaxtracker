@@ -180,6 +180,13 @@
     <div class="table-wrap"><table><thead><tr><th>Exchange</th><th>Trades</th><th>Volume (USD)</th><th>Fees (USD)</th><th>Deposits</th><th>Dep. (USD)</th><th>Withdrawals</th><th>Wd. (USD)</th></tr></thead>
     <tbody id="summaryTable"><tr><td colspan="8" class="cell-dim">Loading...</td></tr></tbody></table></div>
   </div>
+  <div class="card"><div class="card-title">💰 Classified Funding Flows</div>
+    <div class="stat-grid" id="fundingFlowStats"><div class="stat-card"><div class="stat-label">Run classify-flows to populate</div><div class="stat-value">—</div></div></div>
+  </div>
+  <div class="card"><div class="card-title">📈 P&L by Exchange</div>
+    <div class="table-wrap"><table><thead><tr><th>Exchange</th><th>Disposals</th><th>ST Net</th><th>LT Net</th><th>Total Net</th></tr></thead>
+    <tbody id="pnlByExchangeTable"><tr><td colspan="5" class="cell-dim">Run v4 compute to populate</td></tr></tbody></table></div>
+  </div>
   <div id="missingWarning" style="display:none" class="card">
     <div class="card-title" style="color:var(--amber)">⚠️ Missing USD Values</div>
     <p id="missingText" style="font-size:13px;color:var(--text-secondary);margin-bottom:10px"></p>
@@ -602,13 +609,27 @@ document.getElementById('overviewStats').innerHTML=`
 <div class="stat-card"><div class="stat-label">Total Trades</div><div class="stat-value">${tT.toLocaleString()}</div><div class="stat-sub">${exs.length} exchange${exs.length!==1?'s':''}</div></div>
 <div class="stat-card"><div class="stat-label">Trade Volume</div><div class="stat-value usd">${tV.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
 <div class="stat-card"><div class="stat-label">Total Fees</div><div class="stat-value usd">${tF.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
-<div class="stat-card"><div class="stat-label">Deposits (USD)</div><div class="stat-value usd">${tD.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
-<div class="stat-card"><div class="stat-label">Withdrawals (USD)</div><div class="stat-value usd">${tW.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Raw Deposit Ledger FMV</div><div class="stat-value usd">${tD.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">Raw Withdrawal Ledger FMV</div><div class="stat-value usd">${tW.toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
 <div class="stat-card"><div class="stat-label">Missing USD</div><div class="stat-value" style="color:${tM>0?'var(--amber)':'var(--green)'}">${tM}</div></div>`;
 let rows='';exs.forEach(e=>{const t=d.trades[e]||{},dp=d.deposits?.[e]||{},w=d.withdrawals?.[e]||{};
 rows+=`<tr><td style="text-transform:uppercase;font-weight:600">${e}</td><td>${(t.count||0).toLocaleString()}</td><td class="cell-usd">${fU(t.volume_usd)}</td><td class="cell-usd">${fU(t.fees_usd)}</td><td>${(dp.count||0).toLocaleString()}</td><td class="cell-usd">${fU(dp.total_usd)}</td><td>${(w.count||0).toLocaleString()}</td><td class="cell-usd">${fU(w.total_usd)}</td></tr>`;});
 document.getElementById('summaryTable').innerHTML=rows||'<tr><td colspan="8" class="cell-dim">No data — run a sync</td></tr>';
-const wEl=document.getElementById('missingWarning');if(tM>0){wEl.style.display='block';document.getElementById('missingText').textContent=`${m.trades||0} trades, ${m.deposits||0} deposits, ${m.withdrawals||0} withdrawals missing USD. Run backfill to resolve.`;}else{wEl.style.display='none';}}
+const wEl=document.getElementById('missingWarning');if(tM>0){wEl.style.display='block';document.getElementById('missingText').textContent=`${m.trades||0} trades, ${m.deposits||0} deposits, ${m.withdrawals||0} withdrawals missing USD. Run backfill to resolve.`;}else{wEl.style.display='none';}
+// Load classified funding flows
+loadFundingFlows();loadPnlByExchange();}
+
+async function loadFundingFlows(){const d=await api('/v4/funding-by-exchange');if(!d||!d.length)return;
+const el=document.getElementById('fundingFlowStats');if(!el)return;
+let html='';d.forEach(r=>{html+=`<div class="stat-card"><div class="stat-label">${r.exchange.toUpperCase()} External In</div><div class="stat-value usd">${parseFloat(r.external_in_usd||0).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">${r.exchange.toUpperCase()} External Out</div><div class="stat-value usd">${parseFloat(r.external_out_usd||0).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>
+<div class="stat-card"><div class="stat-label">${r.exchange.toUpperCase()} Income</div><div class="stat-value usd">${parseFloat(r.income_in_usd||0).toLocaleString('en-US',{maximumFractionDigits:2})}</div></div>`;});
+el.innerHTML=html;}
+
+async function loadPnlByExchange(){const yr=new Date().getFullYear();const d=await api('/v4/pnl-by-exchange?year='+yr);if(!d||!d.length)return;
+const el=document.getElementById('pnlByExchangeTable');if(!el)return;
+let rows='';d.forEach(r=>{rows+=`<tr><td style="text-transform:uppercase;font-weight:600">${r.exchange}</td><td>${r.disposal_count}</td><td class="cell-usd">${fU(r.st_net)}</td><td class="cell-usd">${fU(r.lt_net)}</td><td class="cell-usd">${fU(r.total_net_usd)}</td></tr>`;});
+el.innerHTML=rows||'<tr><td colspan="5" class="cell-dim">No P&L data — run v4 compute</td></tr>';}
 
 // ── Sync ─────────────────────────────────────────────────
 async function loadSyncStatus(){const d=await api('/sync/status');if(!d)return;const exs=Object.keys(d);if(!exs.length){document.getElementById('syncTable').innerHTML='<tr><td colspan="8" class="cell-dim">No syncs yet</td></tr>';return;}

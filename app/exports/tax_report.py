@@ -516,8 +516,13 @@ async def generate_full_tax_report_v4(session: AsyncSession, year: int,
     await _build_income_schedule_v4(wb, session, year, run_id)
     await _build_transfer_recon_v4(wb, session, run_id)
     await _build_lot_inventory_v4(wb, session, run_id)
+    await _build_exchange_pnl_tab(wb, session, year, run_id)
+    await _build_funding_flows_tab(wb, session, year)
     await _build_exceptions_tab(wb, session, run_id)
+    await _build_data_coverage_tab(wb, session)
+    await _build_valuation_audit_tab(wb, session, year, run_id)
     await _build_run_manifest_tab(wb, session, run_id)
+    await _build_filing_readiness(wb, session, year, run_id)
 
     wb.save(filepath)
     logger.info(f"V4 full tax report exported: {filepath}")
@@ -762,6 +767,258 @@ async def _build_exceptions_tab(wb, session, run_id):
         r += 1
 
     _auto(ws)
+
+
+async def _build_exchange_pnl_tab(wb, session, year, run_id):
+    ws = wb.create_sheet(title="Exchange P&L Summary")
+    ws.cell(row=1, column=1, value=f"Realized P&L by Exchange — {year}").font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font = NOTE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Exchange", "Disposals", "Total Proceeds", "Total Basis",
+                  "ST Proceeds", "ST Basis", "ST Net",
+                  "LT Proceeds", "LT Basis", "LT Net", "Total Net"])
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"y": year}
+    if run_id:
+        params["rid"] = run_id
+
+    res = await session.execute(text(f"""
+        SELECT exchange, COUNT(*),
+            COALESCE(SUM(proceeds), 0), COALESCE(SUM(cost_basis), 0),
+            COALESCE(SUM(CASE WHEN term='short' THEN proceeds END), 0),
+            COALESCE(SUM(CASE WHEN term='short' THEN cost_basis END), 0),
+            COALESCE(SUM(CASE WHEN term='short' THEN gain_loss END), 0),
+            COALESCE(SUM(CASE WHEN term='long' THEN proceeds END), 0),
+            COALESCE(SUM(CASE WHEN term='long' THEN cost_basis END), 0),
+            COALESCE(SUM(CASE WHEN term='long' THEN gain_loss END), 0),
+            COALESCE(SUM(gain_loss), 0)
+        FROM tax.form_8949_v4
+        WHERE tax_year = :y {run_filter}
+        GROUP BY exchange ORDER BY exchange
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, (row_data[0] or "").upper())
+        _data_cell(ws, r, 2, row_data[1])
+        for ci in range(3, 12):
+            _usd_cell(ws, r, ci, row_data[ci - 1])
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_funding_flows_tab(wb, session, year):
+    ws = wb.create_sheet(title="Funding Flows")
+    ws.cell(row=1, column=1, value=f"Classified Funding Flows — {year or 'All'}").font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font = NOTE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Exchange", "External In (USD)", "External Out (USD)",
+                  "Net External", "Internal In", "Internal Out",
+                  "Income (USD)", "Unclassified"])
+    r += 1
+
+    where = ""
+    params = {}
+    if year:
+        where = "WHERE EXTRACT(YEAR FROM event_at) = :y"
+        params["y"] = year
+
+    res = await session.execute(text(f"""
+        SELECT exchange,
+            COALESCE(SUM(CASE WHEN flow_class='EXTERNAL_DEPOSIT' THEN total_usd END), 0),
+            COALESCE(SUM(CASE WHEN flow_class='EXTERNAL_WITHDRAWAL' THEN total_usd END), 0),
+            COALESCE(SUM(CASE WHEN flow_class='EXTERNAL_DEPOSIT' THEN total_usd ELSE 0 END)
+                - SUM(CASE WHEN flow_class='EXTERNAL_WITHDRAWAL' THEN total_usd ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN flow_class='INTERNAL_TRANSFER_IN' THEN total_usd END), 0),
+            COALESCE(SUM(CASE WHEN flow_class='INTERNAL_TRANSFER_OUT' THEN total_usd END), 0),
+            COALESCE(SUM(CASE WHEN flow_class='INCOME_RECEIPT' THEN total_usd END), 0),
+            COALESCE(SUM(CASE WHEN flow_class='UNCLASSIFIED' THEN total_usd END), 0)
+        FROM tax.classified_flows
+        {where}
+        GROUP BY exchange ORDER BY exchange
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, (row_data[0] or "").upper())
+        for ci in range(2, 9):
+            _usd_cell(ws, r, ci, row_data[ci - 1])
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_data_coverage_tab(wb, session):
+    ws = wb.create_sheet(title="Data Coverage")
+    ws.cell(row=1, column=1, value="Data Coverage & API Retention Gaps").font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font = NOTE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Exchange", "Data Type", "API Earliest", "API Latest",
+                  "CSV Earliest", "CSV Latest", "Has Gap", "Requires CSV", "CSV Imported"])
+    r += 1
+
+    res = await session.execute(text("""
+        SELECT exchange, data_type, api_earliest, api_latest,
+               csv_earliest, csv_latest, has_gap, requires_csv, csv_imported
+        FROM tax.data_coverage ORDER BY exchange, data_type
+    """))
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, (row_data[0] or "").upper())
+        _data_cell(ws, r, 2, row_data[1])
+        _data_cell(ws, r, 3, row_data[2], is_date=True)
+        _data_cell(ws, r, 4, row_data[3], is_date=True)
+        _data_cell(ws, r, 5, row_data[4], is_date=True)
+        _data_cell(ws, r, 6, row_data[5], is_date=True)
+        _data_cell(ws, r, 7, "YES" if row_data[6] else "NO")
+        _data_cell(ws, r, 8, "YES" if row_data[7] else "NO")
+        _data_cell(ws, r, 9, "YES" if row_data[8] else "NO")
+        r += 1
+
+    # CSV import history
+    r += 2
+    ws.cell(row=r, column=1, value="CSV Import History").font = H2_FONT
+    r += 1
+    _hdr(ws, r, ["Exchange", "Type", "Filename", "Rows", "Imported", "Duplicates", "Imported At"])
+    r += 1
+
+    res = await session.execute(text("""
+        SELECT exchange, data_type, filename, row_count, imported_count,
+               duplicate_count, imported_at
+        FROM tax.csv_imports ORDER BY imported_at DESC
+    """))
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, (row_data[0] or "").upper())
+        _data_cell(ws, r, 2, row_data[1])
+        _data_cell(ws, r, 3, row_data[2])
+        _data_cell(ws, r, 4, row_data[3])
+        _data_cell(ws, r, 5, row_data[4])
+        _data_cell(ws, r, 6, row_data[5])
+        _data_cell(ws, r, 7, row_data[6], is_date=True)
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_valuation_audit_tab(wb, session, year, run_id):
+    ws = wb.create_sheet(title="Valuation Audit")
+    ws.cell(row=1, column=1, value=f"Valuation Audit Trail — {year}").font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font = NOTE_FONT
+
+    r = 4
+    _hdr(ws, r, ["Asset", "Event Date", "Price Date", "Price (USD)",
+                  "Source", "Granularity", "Estimated?", "Manual?", "Fallback Reason"])
+    r += 1
+
+    run_filter = "AND run_id = :rid" if run_id else ""
+    params = {"y": year}
+    if run_id:
+        params["rid"] = run_id
+
+    res = await session.execute(text(f"""
+        SELECT asset, event_at, price_date, price_usd,
+               source_name, granularity, is_estimated, is_manual, fallback_reason
+        FROM tax.valuation_log
+        WHERE EXTRACT(YEAR FROM event_at) = :y {run_filter}
+        ORDER BY event_at ASC
+        LIMIT 5000
+    """), params)
+
+    for row_data in res.fetchall():
+        _data_cell(ws, r, 1, row_data[0])
+        _data_cell(ws, r, 2, row_data[1], is_date=True)
+        _data_cell(ws, r, 3, row_data[2])
+        _usd_cell(ws, r, 4, row_data[3])
+        _data_cell(ws, r, 5, row_data[4])
+        _data_cell(ws, r, 6, row_data[5])
+        _data_cell(ws, r, 7, "YES" if row_data[6] else "NO")
+        _data_cell(ws, r, 8, "YES" if row_data[7] else "NO")
+        _data_cell(ws, r, 9, row_data[8] or "")
+        r += 1
+
+    _auto(ws)
+
+
+async def _build_filing_readiness(wb, session, year, run_id):
+    """Add FILING READINESS section to the Summary sheet."""
+    ws = wb["Summary"]
+    # Find the next available row
+    max_row = ws.max_row + 3
+
+    ws.cell(row=max_row, column=1, value="FILING READINESS").font = TITLE_FONT
+    max_row += 1
+
+    # Check blocking exceptions
+    res = await session.execute(text("""
+        SELECT COUNT(*) FROM tax.exceptions
+        WHERE blocks_filing = TRUE AND resolution_status = 'open'
+            AND (affected_tax_year = :y OR affected_tax_year IS NULL)
+    """), {"y": year})
+    blocking = res.scalar() or 0
+
+    # Check warnings
+    res = await session.execute(text("""
+        SELECT COUNT(*) FROM tax.exceptions
+        WHERE severity = 'WARNING' AND resolution_status = 'open'
+            AND (affected_tax_year = :y OR affected_tax_year IS NULL)
+    """), {"y": year})
+    warnings = res.scalar() or 0
+
+    # Check data coverage gaps
+    res = await session.execute(text("""
+        SELECT COUNT(*) FROM tax.data_coverage
+        WHERE has_gap = TRUE AND csv_imported = FALSE
+    """))
+    coverage_gaps = res.scalar() or 0
+
+    # Check missing prices
+    res = await session.execute(text("""
+        SELECT COUNT(*) FROM tax.exceptions
+        WHERE category = 'MISSING_PRICE' AND resolution_status = 'open'
+            AND (affected_tax_year = :y OR affected_tax_year IS NULL)
+    """), {"y": year})
+    missing_prices = res.scalar() or 0
+
+    filing_ready = (blocking == 0 and coverage_gaps == 0 and missing_prices == 0)
+
+    fr_label = "YES" if filing_ready else "NO"
+    fr_color = "006100" if filing_ready else "CC0000"
+
+    ws.cell(row=max_row, column=1, value="Filing Ready:").font = BOLD_FONT
+    ws.cell(row=max_row, column=2, value=fr_label).font = Font(name="Arial", bold=True, size=14, color=fr_color)
+    max_row += 1
+
+    ws.cell(row=max_row, column=1, value="Blocking Issues:").font = DATA_FONT
+    ws.cell(row=max_row, column=2, value=blocking)
+    max_row += 1
+
+    ws.cell(row=max_row, column=1, value="Warnings:").font = DATA_FONT
+    ws.cell(row=max_row, column=2, value=warnings)
+    max_row += 1
+
+    ws.cell(row=max_row, column=1, value="Coverage Gaps:").font = DATA_FONT
+    ws.cell(row=max_row, column=2, value=coverage_gaps)
+    max_row += 1
+
+    ws.cell(row=max_row, column=1, value="Missing Prices:").font = DATA_FONT
+    ws.cell(row=max_row, column=2, value=missing_prices)
+    max_row += 1
+
+    if not filing_ready:
+        reasons = []
+        if blocking > 0:
+            reasons.append(f"{blocking} blocking exception(s)")
+        if coverage_gaps > 0:
+            reasons.append(f"{coverage_gaps} data coverage gap(s) without CSV")
+        if missing_prices > 0:
+            reasons.append(f"{missing_prices} missing price(s)")
+        ws.cell(row=max_row, column=1, value="Reason(s):").font = DATA_FONT
+        ws.cell(row=max_row, column=2, value="; ".join(reasons))
 
 
 async def _build_run_manifest_tab(wb, session, run_id):

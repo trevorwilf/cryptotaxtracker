@@ -439,4 +439,69 @@ INSERT INTO tax.tx_type_support (tx_type, is_supported, blocks_filing, notes) VA
     ('pool_swap', FALSE, TRUE, 'Pool swap — NOT YET SUPPORTED'),
     ('referral_bonus', FALSE, FALSE, 'Referral bonus — manual classification needed')
 ON CONFLICT (tx_type) DO NOTHING;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DATA COVERAGE / SOURCE TRACKING
+-- Records what date ranges each exchange's API actually covers,
+-- and whether CSV imports were used to fill gaps.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS tax.data_coverage (
+    id                  SERIAL PRIMARY KEY,
+    exchange            VARCHAR(50) NOT NULL,
+    data_type           VARCHAR(50) NOT NULL,
+    api_earliest        TIMESTAMPTZ,
+    api_latest          TIMESTAMPTZ,
+    csv_earliest        TIMESTAMPTZ,
+    csv_latest          TIMESTAMPTZ,
+    has_gap             BOOLEAN DEFAULT FALSE,
+    gap_description     TEXT,
+    requires_csv        BOOLEAN DEFAULT FALSE,
+    csv_imported        BOOLEAN DEFAULT FALSE,
+    run_id              INTEGER,
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dc_exchange ON tax.data_coverage(exchange, data_type);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CSV IMPORT TRACKING
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS tax.csv_imports (
+    id                  SERIAL PRIMARY KEY,
+    exchange            VARCHAR(50) NOT NULL,
+    data_type           VARCHAR(50) NOT NULL,
+    filename            VARCHAR(500) NOT NULL,
+    file_hash           VARCHAR(64) NOT NULL,
+    row_count           INTEGER NOT NULL,
+    imported_count      INTEGER NOT NULL,
+    duplicate_count     INTEGER NOT NULL,
+    error_count         INTEGER NOT NULL,
+    date_range_start    TIMESTAMPTZ,
+    date_range_end      TIMESTAMPTZ,
+    imported_at         TIMESTAMPTZ DEFAULT NOW(),
+    imported_by         VARCHAR(100) DEFAULT 'system'
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CLASSIFIED FUNDING FLOWS
+-- Every deposit and withdrawal is classified for accountant reporting.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS tax.classified_flows (
+    id                  SERIAL PRIMARY KEY,
+    source_type         VARCHAR(20) NOT NULL,
+    source_id           INTEGER NOT NULL,
+    exchange            VARCHAR(50) NOT NULL,
+    asset               VARCHAR(50) NOT NULL,
+    quantity            NUMERIC(36,18) NOT NULL,
+    unit_price_usd      NUMERIC(36,18),
+    total_usd            NUMERIC(36,18),
+    flow_class          VARCHAR(30) NOT NULL,
+    classification_rule VARCHAR(200),
+    manual_override     BOOLEAN DEFAULT FALSE,
+    manual_notes        TEXT,
+    event_at            TIMESTAMPTZ NOT NULL,
+    run_id              INTEGER,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_cf_exchange ON tax.classified_flows(exchange, flow_class);
+CREATE INDEX IF NOT EXISTS idx_cf_class ON tax.classified_flows(flow_class);
 """

@@ -10,8 +10,9 @@ Covers:
 """
 import hashlib
 import hmac
+import os
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 from exchanges import list_exchanges, _registry
@@ -189,3 +190,130 @@ class TestNonKYCTradeNormalization:
         for side in ["buy", "sell"]:
             trade = make_trade(side=side)
             assert trade["side"] == side
+
+
+# ── NonKYC Deposit Parser (Phase 1) ─────────────────────────────────────
+
+class TestNonKYCDepositParser:
+    """Tests using fixture data matching the official NonKYC API docs."""
+
+    def setup_method(self):
+        self.ex = NonKYCExchange(api_key="test", api_secret="test")
+
+    @pytest.mark.asyncio
+    async def test_deposit_uses_quantity_field(self):
+        """Official NonKYC deposits use 'quantity', not 'amount'."""
+        payload = [{
+            "id": "dep-001",
+            "ticker": "BTC",
+            "childticker": "",
+            "quantity": "1.50000000",
+            "status": "completed",
+            "transactionid": "abc123txhash",
+            "isposted": True,
+            "isreversed": False,
+            "confirmations": 6,
+            "firstseenat": "2025-03-15T10:30:00Z",
+            "address": "bc1qtest",
+            "paymentid": ""
+        }]
+        with patch.object(self.ex, '_get', return_value=payload):
+            result = await self.ex.fetch_deposits()
+        assert len(result) == 1
+        assert result[0]["amount"] == "1.50000000"
+        assert result[0]["tx_hash"] == "abc123txhash"
+        assert result[0]["confirmed_at"].year == 2025
+        assert result[0]["confirmed_at"].month == 3
+
+    @pytest.mark.asyncio
+    async def test_deposit_falls_back_to_amount(self):
+        """If 'quantity' is missing, fall back to 'amount' for compat."""
+        payload = [{"id": "dep-002", "ticker": "ETH", "amount": "5.0",
+                     "txHash": "0xfallback", "confirmedAt": "2025-01-01T00:00:00Z"}]
+        with patch.object(self.ex, '_get', return_value=payload):
+            result = await self.ex.fetch_deposits()
+        assert result[0]["amount"] == "5.0"
+        assert result[0]["tx_hash"] == "0xfallback"
+
+    @pytest.mark.asyncio
+    async def test_withdrawal_uses_quantity_and_requestedat(self):
+        """Official NonKYC withdrawals use 'quantity' and 'requestedat'."""
+        payload = [{
+            "id": "wd-001",
+            "ticker": "BTC",
+            "childticker": "",
+            "quantity": "0.75000000",
+            "fee": "0.00010000",
+            "feecurrency": "BTC",
+            "status": "completed",
+            "transactionid": "def456txhash",
+            "issent": True,
+            "sentat": "2025-03-15T11:00:00Z",
+            "isconfirmed": True,
+            "requestedat": "2025-03-15T10:55:00Z",
+            "address": "bc1qdest",
+            "paymentid": ""
+        }]
+        with patch.object(self.ex, '_get', return_value=payload):
+            result = await self.ex.fetch_withdrawals()
+        assert len(result) == 1
+        assert result[0]["amount"] == "0.75000000"
+        assert result[0]["fee"] == "0.00010000"
+        assert result[0]["tx_hash"] == "def456txhash"
+        # requestedat should be used for confirmed_at
+        assert result[0]["confirmed_at"].minute == 55
+
+    @pytest.mark.asyncio
+    async def test_withdrawal_fee_currency_captured(self):
+        """feecurrency field must be captured from NonKYC withdrawals."""
+        payload = [{"id": "wd-002", "ticker": "SAL", "quantity": "100",
+                     "fee": "0.5", "feecurrency": "SAL",
+                     "transactionid": "tx999", "requestedat": "2025-06-01T00:00:00Z"}]
+        with patch.object(self.ex, '_get', return_value=payload):
+            result = await self.ex.fetch_withdrawals()
+        assert result[0]["fee_currency"] == "SAL"
+
+
+# ── MEXC Symbol Discovery (Phase 2) ─────────────────────────────────────
+
+class TestMEXCSymbolDiscovery:
+    def setup_method(self):
+        self.ex = MEXCExchange(api_key="test", api_secret="test")
+
+    @pytest.mark.asyncio
+    async def test_discovers_from_balances(self):
+        account_response = {"balances": [
+            {"asset": "BTC", "free": "0.5", "locked": "0"},
+            {"asset": "ETH", "free": "0", "locked": "1.0"},
+            {"asset": "USDT", "free": "1000", "locked": "0"},  # should be excluded
+        ]}
+        with patch.object(self.ex, '_get', return_value=account_response):
+            symbols = await self.ex._get_traded_symbols()
+        assert "BTCUSDT" in symbols
+        assert "ETHUSDT" in symbols
+        assert "USDTUSDT" not in symbols
+
+    @pytest.mark.asyncio
+    async def test_extra_symbols_from_env(self):
+        account_response = {"balances": []}
+        with patch.dict(os.environ, {"MEXC_EXTRA_SYMBOLS": "SOLUSDT,ADAUSDT"}):
+            with patch.object(self.ex, '_get', return_value=account_response):
+                symbols = await self.ex._get_traded_symbols()
+        assert "SOLUSDT" in symbols
+        assert "ADAUSDT" in symbols
+
+
+class TestMEXCRetentionAwareness:
+    def setup_method(self):
+        self.ex = MEXCExchange(api_key="test", api_secret="test")
+
+    def test_trade_retention_is_30_days(self):
+        coverage = self.ex.get_data_coverage(
+            since=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        assert coverage["myTrades"]["has_gap"] is True
+        assert coverage["myTrades"]["retention_days"] == 30
+
+    def test_no_gap_within_retention(self):
+        recent = datetime.now(timezone.utc) - timedelta(days=5)
+        coverage = self.ex.get_data_coverage(since=recent)
+        assert coverage["myTrades"]["has_gap"] is False
