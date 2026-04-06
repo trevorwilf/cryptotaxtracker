@@ -73,9 +73,9 @@ class NonKYCExchange(BaseExchange):
             raw = raw.get("result", raw.get("data", []))
         trades = []
         for t in raw:
-            tid = str(t.get("id", t.get("trade_id", "")))
-            # market is ALWAYS a dict in the current API: {"id": "...", "symbol": "BASE/QUOTE"}
-            # The string fallback is retained as a defensive measure only.
+            tid = str(t.get("id", ""))
+
+            # market is ALWAYS a dict in the current API: {"id":"...","symbol":"BASE/QUOTE"}
             market_raw = t.get("market", t.get("symbol", ""))
             if isinstance(market_raw, dict):
                 market = market_raw.get("symbol", "")
@@ -84,11 +84,17 @@ class NonKYCExchange(BaseExchange):
             else:
                 market = str(market_raw) if market_raw else ""
 
+            # Base/quote split from "BASE/QUOTE" symbol
+            parts = market.split("/") if "/" in market else market.split("_")
+            base_asset = parts[0].upper() if len(parts) >= 1 else None
+            quote_asset = parts[1].upper() if len(parts) >= 2 else None
+
             price_str = str(t.get("price", "0"))
             quantity_str = str(t.get("quantity", t.get("base_volume", "0")))
-            total_with_fee = t.get("totalWithFee", t.get("total", t.get("target_volume", "0")))
-            # Fallback: if totalWithFee is zero/missing, compute from price * quantity
-            if total_with_fee is not None and str(total_with_fee) not in ("", "0", "0.0", None):
+
+            # Derive gross quote total: prefer totalWithFee, fallback to price*quantity
+            total_with_fee = t.get("totalWithFee")
+            if total_with_fee is not None and str(total_with_fee) not in ("", "0", "0.0"):
                 total_str = str(total_with_fee)
             else:
                 try:
@@ -97,15 +103,25 @@ class NonKYCExchange(BaseExchange):
                 except Exception:
                     total_str = "0"
 
+            # Fee and fee asset: prefer alternateFeeAsset when present
+            alt_fee_asset = t.get("alternateFeeAsset", "")
+            alt_fee = t.get("alternateFee")
+            if alt_fee_asset and str(alt_fee_asset).strip():
+                fee_asset = str(alt_fee_asset).strip()
+                fee_str = str(alt_fee) if alt_fee is not None else "0"
+            else:
+                fee_asset = quote_asset or ""
+                fee_str = str(t.get("fee", "0"))
+
             trades.append({
                 "exchange": self.name, "exchange_id": tid, "market": market,
-                "base_asset": None, "quote_asset": None,
-                "side": str(t.get("side", t.get("type", ""))).lower(),
+                "base_asset": base_asset, "quote_asset": quote_asset,
+                "side": str(t.get("side", "")).lower(),
                 "price": price_str,
                 "quantity": quantity_str,
                 "total": total_str,
-                "fee": str(t.get("fee", "0")),
-                "fee_asset": t.get("feeAsset", t.get("fee_asset", t.get("alternateFeeAsset"))) or "",
+                "fee": fee_str,
+                "fee_asset": fee_asset,
                 "price_usd": None, "quantity_usd": None, "total_usd": None,
                 "fee_usd": None, "base_price_usd": None, "quote_price_usd": None,
                 "executed_at": self._parse_ts(

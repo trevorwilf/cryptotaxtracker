@@ -236,7 +236,8 @@ def _parse_nonkyc_deposit_csv(data_rows, headers, filename, file_size, sha):
         if not row or len(row) < len(headers):
             continue
         d = dict(zip(headers, row))
-        eid = d.get("TransactionId", "")
+        txid = str(d.get("TransactionId", "")).strip()
+        eid = f"csv-{txid}" if txid else f"csv-nok-dep-{i}"
         ts = _parse_ts(d.get("Time"))
         is_posted = d.get("isPosted", "").lower() == "true"
         rows.append({
@@ -244,7 +245,7 @@ def _parse_nonkyc_deposit_csv(data_rows, headers, filename, file_size, sha):
             "parsed": {
                 "exchange": "nonkyc", "exchange_id": eid, "asset": d.get("Ticker", ""),
                 "amount": _safe_decimal(d.get("Amount")), "amount_usd": _safe_decimal(d.get("ValueUsd")),
-                "tx_hash": eid, "address": d.get("Address", ""),
+                "external_tx_id": txid, "tx_hash": txid, "address": d.get("Address", ""),
                 "confirmed_at": ts.isoformat() if ts else None,
                 "network": None, "status": "posted" if is_posted else "pending",
                 "fee": None, "fee_asset": None,
@@ -264,14 +265,15 @@ def _parse_nonkyc_withdrawal_csv(data_rows, headers, filename, file_size, sha):
         if not row or len(row) < len(headers):
             continue
         d = dict(zip(headers, row))
-        eid = d.get("TransactionId", "")
+        txid = str(d.get("TransactionId", "")).strip()
+        eid = f"csv-{txid}" if txid else f"csv-nok-wd-{i}"
         ts = _parse_ts(d.get("Time"))
         rows.append({
             "row_num": i + 1,
             "parsed": {
                 "exchange": "nonkyc", "exchange_id": eid, "asset": d.get("Ticker", ""),
                 "amount": _safe_decimal(d.get("Amount")), "amount_usd": _safe_decimal(d.get("ValueUsd")),
-                "tx_hash": eid, "address": d.get("Address", ""),
+                "external_tx_id": txid, "tx_hash": txid, "address": d.get("Address", ""),
                 "confirmed_at": ts.isoformat() if ts else None,
                 "network": None, "status": d.get("Status", ""),
                 "fee": None, "fee_asset": None,

@@ -69,14 +69,14 @@ T = datetime(2025, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
 class TestFlowClassification:
 
     @pytest.mark.asyncio
-    async def test_unclassified_deposit(self):
-        """Deposit with no transfer match, no income tag -> UNCLASSIFIED."""
+    async def test_external_deposit(self):
+        """Deposit with no transfer match, no income tag -> EXTERNAL_DEPOSIT."""
         session = FakeClassifierSession()
         session.deposits = [(1, "mexc", "USDT", "10000", "10000", "1.0", T)]
         classifier = FlowClassifier()
         result = await classifier.classify_all(session)
-        assert result["by_class"]["UNCLASSIFIED"] == 1
-        assert session.inserts[0]["fc"] == "UNCLASSIFIED"
+        assert result["by_class"]["EXTERNAL_DEPOSIT"] == 1
+        assert session.inserts[0]["fc"] == "EXTERNAL_DEPOSIT"
 
     @pytest.mark.asyncio
     async def test_internal_transfer_in(self):
@@ -99,13 +99,13 @@ class TestFlowClassification:
         assert result["by_class"]["INCOME_RECEIPT"] == 1
 
     @pytest.mark.asyncio
-    async def test_unclassified_withdrawal(self):
-        """Withdrawal with no transfer match -> UNCLASSIFIED."""
+    async def test_external_withdrawal(self):
+        """Withdrawal with no transfer match -> EXTERNAL_WITHDRAWAL."""
         session = FakeClassifierSession()
         session.withdrawals = [(10, "nonkyc", "USDT", "27000", "27000", "1.0", T)]
         classifier = FlowClassifier()
         result = await classifier.classify_all(session)
-        assert result["by_class"]["UNCLASSIFIED"] == 1
+        assert result["by_class"]["EXTERNAL_WITHDRAWAL"] == 1
 
     @pytest.mark.asyncio
     async def test_internal_transfer_out(self):
@@ -136,7 +136,8 @@ class TestFlowClassification:
         classifier = FlowClassifier()
         result = await classifier.classify_all(session)
         assert result["total_classified"] == 5
-        assert result["by_class"]["UNCLASSIFIED"] == 2  # 1 unmatched deposit + 1 unmatched withdrawal
+        assert result["by_class"]["EXTERNAL_DEPOSIT"] == 1
+        assert result["by_class"]["EXTERNAL_WITHDRAWAL"] == 1
         assert result["by_class"]["INTERNAL_TRANSFER_IN"] == 1
         assert result["by_class"]["INCOME_RECEIPT"] == 1
         assert result["by_class"]["INTERNAL_TRANSFER_OUT"] == 1

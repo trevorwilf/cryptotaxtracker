@@ -114,14 +114,13 @@ class TestNonKYCTradeFixture:
     async def test_full_trade_fixture(self):
         payload = [{
             "id": "t-300",
-            "symbol": "BTC/USDT",
+            "market": {"id": "m1", "symbol": "BTC/USDT"},
             "side": "buy",
             "price": "50000.00",
             "quantity": "0.25",
-            "total": "12500.00",
+            "totalWithFee": "12500.00",
             "fee": "12.50",
-            "feeAsset": "USDT",
-            "timestamp": "2025-04-12T16:00:00Z"
+            "timestamp": 1712937600000,
         }]
         with patch.object(self.ex, '_get', return_value=payload):
             result = await self.ex.fetch_trades()
@@ -135,7 +134,9 @@ class TestNonKYCTradeFixture:
         assert t["quantity"] == "0.25"
         assert t["total"] == "12500.00"
         assert t["fee"] == "12.50"
-        assert t["fee_asset"] == "USDT"
+        assert t["fee_asset"] == "USDT"  # defaults to quote asset
+        assert t["base_asset"] == "BTC"
+        assert t["quote_asset"] == "USDT"
 
 
 class TestMEXCTradeFixture:

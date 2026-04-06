@@ -270,7 +270,8 @@ class TestFlowClassificationScenario:
         classifier = FlowClassifier()
         result = await classifier.classify_all(session)
 
-        assert result["by_class"]["UNCLASSIFIED"] == 2          # MEXC USDT deposit + NonKYC USDT withdrawal (unmatched)
+        assert result["by_class"]["EXTERNAL_DEPOSIT"] == 1       # MEXC USDT deposit (unmatched)
+        assert result["by_class"]["EXTERNAL_WITHDRAWAL"] == 1   # NonKYC USDT withdrawal (unmatched)
         assert result["by_class"]["INTERNAL_TRANSFER_IN"] == 1  # NonKYC BTC deposit
         assert result["by_class"]["INCOME_RECEIPT"] == 1        # NonKYC SAL income
         assert result["by_class"]["INTERNAL_TRANSFER_OUT"] == 1 # MEXC BTC withdrawal

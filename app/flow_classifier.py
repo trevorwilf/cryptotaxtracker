@@ -90,8 +90,8 @@ class FlowClassifier:
                 flow_class = "INCOME_RECEIPT"
                 rule = "Classified as income in income_events_v4"
             else:
-                flow_class = "UNCLASSIFIED"
-                rule = "No transfer match or income classification found — requires manual review"
+                flow_class = "EXTERNAL_DEPOSIT"
+                rule = "No transfer match or income classification found"
 
             qty = D(str(amount or "0"))
             unit_price = D(str(price_usd or "0"))
@@ -124,8 +124,8 @@ class FlowClassifier:
                 flow_class = "INTERNAL_TRANSFER_OUT"
                 rule = "Matched as TRANSFER_OUT in normalized events"
             else:
-                flow_class = "UNCLASSIFIED"
-                rule = "No transfer match found — requires manual review"
+                flow_class = "EXTERNAL_WITHDRAWAL"
+                rule = "No transfer match found"
 
             qty = D(str(amount or "0"))
             unit_price = D(str(price_usd or "0"))

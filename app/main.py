@@ -132,6 +132,11 @@ _sync_lock = asyncio.Lock()
 
 async def run_sync(exchange_name: str, full: bool = False):
     """Pull all tax-relevant data from an exchange and resolve USD values."""
+    async with _sync_lock:
+        await _run_sync_inner(exchange_name, full)
+
+
+async def _run_sync_inner(exchange_name: str, full: bool = False):
     logger.info(f"Starting {'full' if full else 'incremental'} sync for {exchange_name}")
     sync_status[exchange_name] = {"status": "running", "started": datetime.now(timezone.utc).isoformat()}
 
@@ -1265,6 +1270,31 @@ async def v4_run_history():
         """))
         runs = [dict(zip(r.keys(), row)) for row in r.fetchall()]
     return {"count": len(runs), "runs": runs}
+
+
+@app.post("/v4/activity-start")
+async def set_activity_start(exchange: str = Query(...), start_date: str = Query(...),
+                              notes: str = Query(None)):
+    """Record the first activity date for an exchange to suppress phantom coverage gaps."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        await session.execute(t("""
+            INSERT INTO tax.activity_start (exchange, start_date, notes)
+            VALUES (:ex, :sd, :notes)
+            ON CONFLICT (exchange) DO UPDATE SET start_date = EXCLUDED.start_date,
+                notes = EXCLUDED.notes, updated_at = NOW()
+        """), {"ex": exchange.lower(), "sd": start_date, "notes": notes})
+        await session.commit()
+    return {"exchange": exchange, "start_date": start_date}
+
+
+@app.get("/v4/activity-start")
+async def get_activity_starts():
+    """List recorded activity start dates."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("SELECT exchange, start_date, notes FROM tax.activity_start ORDER BY exchange"))
+        return [dict(zip(r.keys(), row)) for row in r.fetchall()]
 
 
 # ══════════════════════════════════════════════════════════════════════════

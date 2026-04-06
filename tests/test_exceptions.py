@@ -29,7 +29,7 @@ class TestExceptionSeverity:
         assert MISSING_PRICE == "MISSING_PRICE"
         assert UNSUPPORTED_TX == "UNSUPPORTED_TX_TYPE"
         assert AMBIGUOUS_DEPOSIT == "AMBIGUOUS_DEPOSIT"
-        assert OVERSOLD == "OVERSOLD"
+        assert OVERSOLD == "INVENTORY_SHORTFALL"  # renamed, backward-compat alias
 
 
 class TestExceptionManager:

@@ -138,7 +138,7 @@ class TestTransferMatcherRunIsolation:
 # ── Flow Classifier Run Scoping ──────────────────────────────────────────
 
 class TestFlowClassifierRunScoping:
-    """Verify flow classifier is run-scoped and defaults to UNCLASSIFIED."""
+    """Verify flow classifier is run-scoped and classifies correctly."""
 
     def test_delete_is_run_scoped(self):
         """Classifier should DELETE only for the given run_id."""
@@ -155,8 +155,8 @@ class TestFlowClassifierRunScoping:
         assert "ne.run_id = :rid" in source
 
     @pytest.mark.asyncio
-    async def test_unmatched_deposits_are_unclassified(self):
-        """Unmatched deposits default to UNCLASSIFIED, not EXTERNAL_DEPOSIT."""
+    async def test_unmatched_deposits_are_external(self):
+        """Unmatched deposits default to EXTERNAL_DEPOSIT."""
         from test_flow_classifier import FakeClassifierSession
         session = FakeClassifierSession()
         session.deposits = [
@@ -164,12 +164,11 @@ class TestFlowClassifierRunScoping:
         ]
         classifier = FlowClassifier()
         result = await classifier.classify_all(session)
-        assert result["by_class"]["UNCLASSIFIED"] == 1
-        assert result["by_class"]["EXTERNAL_DEPOSIT"] == 0
+        assert result["by_class"]["EXTERNAL_DEPOSIT"] == 1
 
     @pytest.mark.asyncio
-    async def test_unmatched_withdrawals_are_unclassified(self):
-        """Unmatched withdrawals default to UNCLASSIFIED, not EXTERNAL_WITHDRAWAL."""
+    async def test_unmatched_withdrawals_are_external(self):
+        """Unmatched withdrawals default to EXTERNAL_WITHDRAWAL."""
         from test_flow_classifier import FakeClassifierSession
         session = FakeClassifierSession()
         session.withdrawals = [
@@ -177,8 +176,7 @@ class TestFlowClassifierRunScoping:
         ]
         classifier = FlowClassifier()
         result = await classifier.classify_all(session)
-        assert result["by_class"]["UNCLASSIFIED"] == 1
-        assert result["by_class"]["EXTERNAL_WITHDRAWAL"] == 0
+        assert result["by_class"]["EXTERNAL_WITHDRAWAL"] == 1
 
 
 # ── Exception System Run Scoping ─────────────────────────────────────────
@@ -326,7 +324,7 @@ class TestExchangeTransfersTable:
         """run_sync should call fetch_transfers if available."""
         import inspect
         import main as main_module
-        source = inspect.getsource(main_module.run_sync)
+        source = inspect.getsource(main_module._run_sync_inner)
         assert "fetch_transfers" in source
 
 

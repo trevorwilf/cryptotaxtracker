@@ -50,7 +50,8 @@ class TransferMatcherV4:
         # Get unresolved withdrawal events
         wd_result = await session.execute(text("""
             SELECT ne.id, ne.wallet, ne.asset, ne.quantity::text, ne.event_at,
-                   w.tx_hash, w.fee::text, COALESCE(w.fee_asset, w.asset) AS fee_asset, ne.source_withdrawal_id
+                   w.tx_hash, w.address,
+                   w.fee::text, COALESCE(w.fee_asset, w.asset) AS fee_asset, ne.source_withdrawal_id
             FROM tax.normalized_events ne
             LEFT JOIN tax.withdrawals w ON w.id = ne.source_withdrawal_id
             WHERE ne.event_type = 'UNRESOLVED'
@@ -63,7 +64,7 @@ class TransferMatcherV4:
         # Get unresolved deposit events
         dep_result = await session.execute(text("""
             SELECT ne.id, ne.wallet, ne.asset, ne.quantity::text, ne.event_at,
-                   d.tx_hash, ne.source_deposit_id
+                   d.tx_hash, d.address, ne.source_deposit_id
             FROM tax.normalized_events ne
             LEFT JOIN tax.deposits d ON d.id = ne.source_deposit_id
             WHERE ne.event_type = 'UNRESOLVED'
@@ -147,45 +148,50 @@ class TransferMatcherV4:
 
     def _check_match(self, wd: dict, dep: dict, claims: dict = None) -> str | None:
         """Check if a withdrawal-deposit pair matches. Returns confidence or None."""
-        # Same asset required
+        # 1. Same asset required
         if dep["asset"] != wd["asset"]:
             return None
 
-        # Deposit must be after withdrawal
+        # 2. Deposit must be after withdrawal
         if dep["event_at"] < wd["event_at"]:
             return None
 
-        # Within time window
+        # 3. Within time window
         if (dep["event_at"] - wd["event_at"]) > self.time_window:
             return None
 
-        # Amount within fee tolerance
+        # 4. EXACT TX HASH — highest confidence, no amount check required
+        if (wd.get("tx_hash") and dep.get("tx_hash")
+                and wd["tx_hash"] == dep["tx_hash"]):
+            return "tx_hash"
+
+        # 5. Wallet claim — both addresses self-owned (relaxed 20% tolerance)
+        if claims:
+            wd_addr = (wd.get("address") or "").lower()
+            dep_addr = (dep.get("address") or "").lower()
+            if wd_addr and dep_addr and wd_addr in claims and dep_addr in claims:
+                wd_amount = D(str(wd["quantity"]))
+                dep_amount = D(str(dep["quantity"]))
+                if wd_amount > 0:
+                    diff_pct = abs(dep_amount - wd_amount) / wd_amount
+                    if diff_pct <= D("0.20"):
+                        return "wallet_claim"
+
+        # 6. Amount + timing fallback
         wd_amount = D(str(wd["quantity"]))
         wd_fee = D(str(wd.get("fee") or 0))
         wd_net = wd_amount - wd_fee
         dep_amount = D(str(dep["quantity"]))
 
-        if wd_net > 0:
+        if wd_net > ZERO:
             diff_pct = abs(dep_amount - wd_net) / wd_net
-        elif wd_amount > 0:
+        elif wd_amount > ZERO:
             diff_pct = abs(dep_amount - wd_amount) / wd_amount
         else:
             return None
 
         if diff_pct > self.fee_tolerance:
             return None
-
-        # Wallet claim boost: both addresses owned = high confidence self-transfer
-        if claims:
-            wd_addr = (wd.get("address") or "").lower()
-            dep_addr = (dep.get("address") or "").lower()
-            if wd_addr and dep_addr and wd_addr in claims and dep_addr in claims:
-                return "wallet_claim"
-
-        # TX hash match = high confidence
-        if (wd.get("tx_hash") and dep.get("tx_hash")
-                and wd["tx_hash"] == dep["tx_hash"]):
-            return "tx_hash"
 
         return "amount_timing"
 

@@ -612,6 +612,13 @@ CREATE TABLE IF NOT EXISTS tax.import_stage_rows (
     UNIQUE(stage_id, row_index)
 );
 
+CREATE TABLE IF NOT EXISTS tax.activity_start (
+    exchange TEXT PRIMARY KEY,
+    start_date DATE NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS tax.wallet_claim_evidence (
     id              SERIAL PRIMARY KEY,
     claim_id        INTEGER NOT NULL REFERENCES tax.wallet_address_claims(id),

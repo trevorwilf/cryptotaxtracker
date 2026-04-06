@@ -306,6 +306,10 @@ class Database:
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         price = EXCLUDED.price, quantity = EXCLUDED.quantity,
                         total = EXCLUDED.total, fee = EXCLUDED.fee,
+                        fee_asset = COALESCE(EXCLUDED.fee_asset, tax.trades.fee_asset),
+                        base_asset = COALESCE(EXCLUDED.base_asset, tax.trades.base_asset),
+                        quote_asset = COALESCE(EXCLUDED.quote_asset, tax.trades.quote_asset),
+                        market = COALESCE(EXCLUDED.market, tax.trades.market),
                         price_usd = COALESCE(EXCLUDED.price_usd, tax.trades.price_usd),
                         quantity_usd = COALESCE(EXCLUDED.quantity_usd, tax.trades.quantity_usd),
                         total_usd = COALESCE(EXCLUDED.total_usd, tax.trades.total_usd),

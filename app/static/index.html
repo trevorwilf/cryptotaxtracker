@@ -357,7 +357,7 @@
     </p>
     <div class="input-group">
       <div><label>Tax Year</label><input type="number" id="exportYear" value="2025" min="2020" max="2030" style="width:100px"></div>
-      <button class="btn btn-purple" onclick="window.open('/export/tax-report?year='+document.getElementById('exportYear').value)">⬇ Full Tax Report (Form 8949)</button>
+      <button class="btn btn-purple" onclick="window.open('/export/v4-tax-report?year='+document.getElementById('exportYear').value)">⬇ Full Tax Report (Form 8949)</button>
       <button class="btn btn-secondary" onclick="window.open('/export/xlsx'+(document.getElementById('exportYear').value?'?year='+document.getElementById('exportYear').value:''))">⬇ Raw Trade Report</button>
     </div>
   </div>
@@ -1452,6 +1452,8 @@ async function exportTables(){
 }
 
 // ── Init ─────────────────────────────────────────────────
+const CURRENT_TAX_YEAR=new Date().getFullYear();
+document.querySelectorAll('input[type="number"]').forEach(el=>{if(el.value==='2025'&&el.id.toLowerCase().includes('year'))el.value=CURRENT_TAX_YEAR;});
 checkHealth();loadOverview();setInterval(checkHealth,30000);
 </script>
 </body>

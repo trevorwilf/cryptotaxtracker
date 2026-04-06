@@ -24,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from exceptions import ExceptionManager, BLOCKING, WARNING, INFO
-from exceptions import UNKNOWN_BASIS, OVERSOLD
+from exceptions import UNKNOWN_BASIS, OVERSOLD, INVENTORY_SHORTFALL
 from valuation_v4 import ValuationV4
 
 logger = logging.getLogger("tax-collector.tax-engine-v4")
@@ -433,11 +433,13 @@ class TaxEngineV4:
                 remaining_to_sell -= consume
                 portion_used += consume
 
-            # Oversold — no lots left but still have quantity to sell
+            # Inventory shortfall — no lots left but still have quantity to sell
             if remaining_to_sell > ZERO:
-                self.exc.log(BLOCKING, OVERSOLD,
-                             f"Oversold {asset} on {wallet}: tried to sell "
-                             f"{disposal_qty} but only {portion_used} available in lots",
+                self.exc.log(BLOCKING, INVENTORY_SHORTFALL,
+                             f"[INVENTORY_SHORTFALL] Cannot find sufficient acquisition lots for "
+                             f"{asset} disposal of {disposal_qty} on {wallet}. "
+                             f"Only {portion_used} available. Likely causes: unmatched transfer, "
+                             f"missing external deposit classification, or stale source data.",
                              source_event_id=ev["id"],
                              tax_year=disposed_at.year, run_id=run_id)
 
