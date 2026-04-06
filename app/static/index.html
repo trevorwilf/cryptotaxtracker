@@ -362,11 +362,12 @@
     </div>
   </div>
   <div class="card" style="margin-top:1rem">
-    <div class="card-title">🗄️ Debug — Export Database Tables</div>
+    <div class="card-title">🗄️ Debug — Full Database Diagnostic Export</div>
     <p style="color:var(--text-secondary);font-size:13px;margin-bottom:1rem;line-height:1.7">
-      Dump every <code style="color:var(--cyan)">tax.*</code> table to CSV for debugging.
-      Files are saved to <code style="color:var(--cyan)">/data/logs/tables/</code> and can be
-      downloaded as a zip. Share with Claude when troubleshooting.
+      Exports <strong style="color:var(--text-primary)">everything</strong>:
+      full schema DDL, all table data as CSV, data quality analysis (NULLs, distributions, date ranges),
+      referential integrity checks, sequence states, and storage statistics.
+      Download the zip and share it for debugging.
     </p>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="exportTables()" id="exportTablesBtn">🗄️ Export All Tables</button>
@@ -1433,7 +1434,7 @@ async function exportTables(){
   const dlBtn=document.getElementById('downloadTablesBtn');
   btn.disabled=true;btn.textContent='⏳ Exporting...';
   resultDiv.style.display='block';
-  con.innerHTML='<span class="log-info">Exporting all tax.* tables...</span>';
+  con.innerHTML='<span class="log-info">Running full database diagnostic export...</span>';
   try{
     const resp=await fetch('/v4/export-tables',{method:'POST'});
     const d=await resp.json();

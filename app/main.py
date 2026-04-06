@@ -1260,138 +1260,29 @@ async def v4_run_history():
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# DATABASE TABLE EXPORT (for debugging)
+# DATABASE DIAGNOSTIC EXPORT (for debugging)
 # ══════════════════════════════════════════════════════════════════════════
 
 import zipfile
 
 @app.post("/v4/export-tables")
 async def export_tables():
-    """Export all tax.* tables to CSV files for debugging.
-
-    Each table becomes one CSV with headers. Also generates a
-    _manifest.txt with row counts, column info, and export timestamp.
-    """
-    import csv as csv_mod
+    """Export complete database diagnostic package for debugging."""
+    from db_export import DatabaseExporter
     export_dir = os.path.join(LOG_DIR, "tables")
-    os.makedirs(export_dir, exist_ok=True)
-
-    # Clean previous export
-    for f in os.listdir(export_dir):
-        fp = os.path.join(export_dir, f)
-        if os.path.isfile(fp):
-            os.remove(fp)
-
-    manifest_lines = []
-    export_time = datetime.now(timezone.utc).isoformat()
-    manifest_lines.append("CryptoTaxTracker — Database Table Export")
-    manifest_lines.append(f"Exported at: {export_time}")
-    manifest_lines.append("")
-
-    total_tables = 0
-    total_rows = 0
-    errors = []
-
+    exporter = DatabaseExporter(export_dir, settings.database_url)
     async with db.get_session() as session:
-        from sqlalchemy import text as t
-        result = await session.execute(t("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'tax'
-            ORDER BY table_name
-        """))
-        table_names = [row[0] for row in result.fetchall()]
-
-        manifest_lines.append(f"Tables found: {len(table_names)}")
-        manifest_lines.append("=" * 60)
-        manifest_lines.append("")
-
-        for table_name in table_names:
-            try:
-                # Get column info
-                col_result = await session.execute(t("""
-                    SELECT column_name, data_type, is_nullable
-                    FROM information_schema.columns
-                    WHERE table_schema = 'tax' AND table_name = :tbl
-                    ORDER BY ordinal_position
-                """), {"tbl": table_name})
-                columns = [dict(zip(col_result.keys(), row)) for row in col_result.fetchall()]
-                col_names = [c["column_name"] for c in columns]
-
-                # Get row count
-                count_result = await session.execute(t(f"SELECT COUNT(*) FROM tax.{table_name}"))
-                row_count = count_result.scalar() or 0
-
-                # Cast all columns to text; truncate raw_data JSONB
-                cast_cols = ", ".join(
-                    f"{c}::text" if c != "raw_data" else f"LEFT({c}::text, 500) AS {c}"
-                    for c in col_names
-                )
-                if "id" in col_names:
-                    data_result = await session.execute(
-                        t(f"SELECT {cast_cols} FROM tax.{table_name} ORDER BY id"))
-                else:
-                    data_result = await session.execute(
-                        t(f"SELECT {cast_cols} FROM tax.{table_name}"))
-                rows = data_result.fetchall()
-
-                # Write CSV
-                csv_path = os.path.join(export_dir, f"{table_name}.csv")
-                with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv_mod.writer(f)
-                    writer.writerow(col_names)
-                    for row in rows:
-                        writer.writerow(list(row))
-
-                file_size = os.path.getsize(csv_path)
-                total_tables += 1
-                total_rows += row_count
-
-                manifest_lines.append(f"TABLE: tax.{table_name}")
-                manifest_lines.append(f"  Rows: {row_count}")
-                manifest_lines.append(f"  File: {table_name}.csv ({file_size/1024:.1f} KB)")
-                manifest_lines.append(f"  Columns ({len(columns)}):")
-                for c in columns:
-                    nullable = "NULL" if c["is_nullable"] == "YES" else "NOT NULL"
-                    manifest_lines.append(f"    {c['column_name']:30s} {c['data_type']:20s} {nullable}")
-                manifest_lines.append("")
-
-                logger.info(f"[export-tables] Exported tax.{table_name}: {row_count} rows, {file_size/1024:.1f} KB")
-
-            except Exception as e:
-                errors.append({"table": table_name, "error": str(e)})
-                manifest_lines.append(f"TABLE: tax.{table_name}")
-                manifest_lines.append(f"  ERROR: {e}")
-                manifest_lines.append("")
-                logger.error(f"[export-tables] Failed to export tax.{table_name}: {e}")
-
-    manifest_lines.append("=" * 60)
-    manifest_lines.append(f"TOTALS: {total_tables} tables, {total_rows} rows")
-    if errors:
-        manifest_lines.append(f"ERRORS: {len(errors)} tables failed to export")
-
-    manifest_path = os.path.join(export_dir, "_manifest.txt")
-    with open(manifest_path, "w") as f:
-        f.write("\n".join(manifest_lines))
-
-    logger.info(f"[export-tables] Complete: {total_tables} tables, {total_rows} rows exported to {export_dir}")
-
-    return {
-        "export_dir": export_dir,
-        "export_time": export_time,
-        "tables_exported": total_tables,
-        "total_rows": total_rows,
-        "errors": errors,
-        "files": sorted(os.listdir(export_dir)),
-    }
+        result = await exporter.export_all(session)
+    return result
 
 
 @app.get("/v4/export-tables/download")
 async def download_table_export(table: str = Query(None)):
-    """Download exported table CSVs.
+    """Download exported table CSVs or full diagnostic zip.
 
-    If table is specified, returns that single CSV.
-    Otherwise returns a zip of all exported files.
+    Args:
+        table: Specific table name (without tax. prefix) to download as CSV.
+               If omitted, downloads a zip of all tables + diagnostic files.
     """
     export_dir = os.path.join(LOG_DIR, "tables")
 
