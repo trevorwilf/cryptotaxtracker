@@ -300,7 +300,7 @@ class TestDataCoverageModule:
         """compute-all should call DataCoverageTracker."""
         import inspect
         import main as main_module
-        source = inspect.getsource(main_module.v4_compute_all)
+        source = inspect.getsource(main_module._compute_v4_full)
         assert "DataCoverageTracker" in source
         assert "compute_coverage" in source
 
@@ -336,18 +336,18 @@ class TestComputeAllPipelineComplete:
     def test_pipeline_includes_flow_classification(self):
         import inspect
         import main as main_module
-        source = inspect.getsource(main_module.v4_compute_all)
+        source = inspect.getsource(main_module._compute_v4_full)
         assert "FlowClassifier" in source
         assert "classify_all" in source
 
     def test_pipeline_includes_data_coverage(self):
         import inspect
         import main as main_module
-        source = inspect.getsource(main_module.v4_compute_all)
+        source = inspect.getsource(main_module._compute_v4_full)
         assert "DataCoverageTracker" in source
 
     def test_pipeline_clears_exceptions_before_run(self):
         import inspect
         import main as main_module
-        source = inspect.getsource(main_module.v4_compute_all)
+        source = inspect.getsource(main_module._compute_v4_full)
         assert "clear_for_run" in source

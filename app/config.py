@@ -27,6 +27,9 @@ class Settings:
         self.mexc_api_key = os.environ.get("MEXC_API_KEY", "")
         self.mexc_api_secret = os.environ.get("MEXC_API_SECRET", "")
 
+        # Auto-trigger v4 recompute after every sync completes
+        self.auto_recompute = os.environ.get("TAX_AUTO_RECOMPUTE", "true").lower() == "true"
+
         # Salvium wallet RPC (not API-key based — uses RPC URL/user/pass)
         self.salvium_rpc_url = os.environ.get("SALVIUM_RPC_URL", "http://127.0.0.1:19082")
         self.salvium_rpc_user = os.environ.get("SALVIUM_RPC_USER", "")

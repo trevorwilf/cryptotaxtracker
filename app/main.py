@@ -125,6 +125,7 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 sync_status: dict[str, dict] = {}
 backfill_status: dict = {"status": "idle"}
+recompute_status: dict = {}
 _sync_lock = asyncio.Lock()
 
 
@@ -293,9 +294,46 @@ async def _run_sync_inner(exchange_name: str, full: bool = False):
         }
 
 
+async def _run_recompute_after_sync():
+    """Trigger a v4 recompute for the current tax year after sync completes."""
+    global recompute_status
+    if not settings.auto_recompute:
+        logger.debug("Auto-recompute disabled (TAX_AUTO_RECOMPUTE=false)")
+        return
+
+    year = datetime.now(timezone.utc).year
+    logger.info(f"Auto-recompute: triggering v4 compute-all for tax year {year}")
+    recompute_status = {
+        "status": "running",
+        "started": datetime.now(timezone.utc).isoformat(),
+        "year": year,
+    }
+    try:
+        result = await _compute_v4_full(year)
+        net = result.get("compute", {}).get("net_total", "?")
+        run_id = result.get("run_id", "?")
+        recompute_status.update({
+            "status": "success",
+            "finished": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "net_total": net,
+        })
+        logger.info(f"Auto-recompute complete: run_id={run_id}  net={net}")
+    except Exception as e:
+        recompute_status.update({
+            "status": "error",
+            "finished": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        })
+        logger.error(f"Auto-recompute failed (sync data is still saved): {e}")
+
+
 async def run_sync_all(full: bool = False):
     for name in settings.enabled_exchanges:
         await run_sync(name, full=full)
+
+    # Auto-recompute after all exchanges have synced
+    await _run_recompute_after_sync()
 
 
 # ── Backfill logic ────────────────────────────────────────────────────────
@@ -480,7 +518,11 @@ async def sync_all(full: bool = Query(False)):
 
 @app.get("/sync/status")
 async def get_sync_status():
-    return sync_status
+    return {
+        "exchanges": sync_status,
+        "auto_recompute_enabled": settings.auto_recompute,
+        "last_recompute": recompute_status,
+    }
 
 
 # ── Backfill endpoint ────────────────────────────────────────────────────
@@ -827,145 +869,147 @@ async def _update_run_manifest(session, run_id: int, status: str,
     })
 
 
-@app.post("/v4/compute-all")
-async def v4_compute_all(year: int = Query(2025)):
-    """Full v4 pipeline: normalize -> match transfers -> classify income -> FIFO -> Form 8949."""
+async def _compute_v4_full(year: int) -> dict:
+    """Core v4 pipeline logic. Called from endpoint and auto-recompute."""
+    async with db.get_session() as session:
+        run_id = await _create_run_manifest(session, "full", year)
+        await session.commit()
+
+    results = {}
+    exc = ExceptionManager()
+
+    # Step 0: Clear stale exceptions from any prior run with same run_id
+    async with db.get_session() as session:
+        await ExceptionManager.clear_for_run(session, run_id)
+        await session.commit()
+
+    # Step 0.5: Data quality validation
+    async with db.get_session() as session:
+        from data_quality import validate_data_quality
+        await validate_data_quality(session, exc, run_id)
+
+    # Step 1: Normalize
+    async with db.get_session() as session:
+        ledger = NormalizedLedger(exc)
+        results["normalize"] = await ledger.decompose_all(session, run_id)
+        await session.commit()
+
+    # Step 2: Create acquisition lots first (so transfer matcher can find them)
+    async with db.get_session() as session:
+        val = ValuationV4(exc)
+        engine = TaxEngineV4(exc, val)
+        acq_count = await engine.create_acquisition_lots(session, run_id)
+        results["acquisition_lots"] = acq_count
+        await session.commit()
+
+    # Step 3: Match and relocate transfers (lots now exist)
+    async with db.get_session() as session:
+        matcher = TransferMatcherV4()
+        results["transfers"] = await matcher.match_and_relocate(session, exc, run_id)
+        await session.commit()
+
+    # Step 4: Classify income + create income lots
+    async with db.get_session() as session:
+        val = ValuationV4(exc)
+        classifier = IncomeClassifierV4(exc, val)
+        results["income"] = await classifier.classify(session, run_id)
+        await session.commit()
+
+    async with db.get_session() as session:
+        val = ValuationV4(exc)
+        engine = TaxEngineV4(exc, val)
+        inc_count = await engine.create_income_lots(session, run_id)
+        results["income_lots"] = inc_count
+        await session.commit()
+
+    # Step 5: Process disposals + Form 8949
+    async with db.get_session() as session:
+        val = ValuationV4(exc)
+        engine = TaxEngineV4(exc, val)
+        results["compute"] = await engine.process_disposals_and_report(session, run_id, year=year)
+        await session.commit()
+
+    # Step 6: Classify funding flows
+    async with db.get_session() as session:
+        from flow_classifier import FlowClassifier
+        fc = FlowClassifier()
+        results["funding_flows"] = await fc.classify_all(session, run_id)
+        await session.commit()
+
+    # Step 7: Compute data coverage
+    async with db.get_session() as session:
+        from data_coverage import DataCoverageTracker
+        tracker = DataCoverageTracker()
+        results["data_coverage"] = await tracker.compute_coverage(session, run_id, year)
+        await session.commit()
+
+    # Step 8: Check data coverage gaps (stop-ship)
+    blockers = []
+    warnings_list = []
     try:
-        async with db.get_session() as session:
-            run_id = await _create_run_manifest(session, "full", year)
-            await session.commit()
+        from exchanges.mexc import MEXCExchange, MEXC_RETENTION
+        mexc_ex = get_exchange("mexc", settings)
+        if mexc_ex and isinstance(mexc_ex, MEXCExchange):
+            tax_year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+            coverage = mexc_ex.get_data_coverage(since=tax_year_start)
+            for endpoint, info in coverage.items():
+                if info["has_gap"]:
+                    async with db.get_session() as session:
+                        from sqlalchemy import text as t
+                        r = await session.execute(t("""
+                            SELECT COUNT(*) FROM tax.csv_imports
+                            WHERE exchange = 'mexc' AND date_range_start <= :start
+                        """), {"start": tax_year_start})
+                        csv_covers = (r.scalar() or 0) > 0
+                    if not csv_covers:
+                        msg = (f"BLOCKING: MEXC {info['description']} only covers last "
+                               f"{info['retention_days']} days. Tax year {year} requires "
+                               f"data from {year}-01-01. Import official MEXC CSV exports.")
+                        blockers.append(msg)
+                        exc.log("BLOCKING", "DATA_COVERAGE_GAP", msg,
+                                tax_year=year, blocks_filing=True, run_id=run_id)
+    except Exception as e:
+        logger.warning(f"Data coverage check failed: {e}")
 
-        results = {}
-        exc = ExceptionManager()
+    # Flush exceptions
+    async with db.get_session() as session:
+        exc_count = await exc.flush(session)
+        filing_status = await ExceptionManager.check_filing_ready(session, year, run_id=run_id)
+        await session.commit()
 
-        # Step 0: Clear stale exceptions from any prior run with same run_id
-        async with db.get_session() as session:
-            await ExceptionManager.clear_for_run(session, run_id)
-            await session.commit()
+    if blockers:
+        filing_status["filing_ready"] = False
+        filing_status["blockers"] = blockers
 
-        # Step 0.5: Data quality validation
-        async with db.get_session() as session:
-            from data_quality import validate_data_quality
-            await validate_data_quality(session, exc, run_id)
+    # Update manifest
+    async with db.get_session() as session:
+        await _update_run_manifest(session, run_id,
+            status="completed" if filing_status["filing_ready"] else "filing_blocked",
+            stats={
+                "total_events": results["normalize"].get("events_created", 0),
+                "total_disposals": results["compute"].get("disposals_processed", 0),
+                "total_exceptions": exc_count,
+                "blocking_exceptions": filing_status.get("blocking_count", 0),
+                "filing_ready": filing_status["filing_ready"],
+            })
+        await session.commit()
 
-        # Step 1: Normalize
-        async with db.get_session() as session:
-            ledger = NormalizedLedger(exc)
-            results["normalize"] = await ledger.decompose_all(session, run_id)
-            await session.commit()
+    results["run_id"] = run_id
+    results["exceptions_logged"] = exc_count
+    results["filing_status"] = filing_status
+    results["filing_ready"] = filing_status["filing_ready"]
+    results["blockers"] = blockers
+    results["warnings"] = warnings_list
+    return results
 
-        # Step 2: Create acquisition lots first (so transfer matcher can find them)
-        async with db.get_session() as session:
-            val = ValuationV4(exc)
-            engine = TaxEngineV4(exc, val)
-            acq_count = await engine.create_acquisition_lots(session, run_id)
-            results["acquisition_lots"] = acq_count
-            await session.commit()
 
-        # Step 3: Match and relocate transfers (lots now exist)
-        async with db.get_session() as session:
-            matcher = TransferMatcherV4()
-            results["transfers"] = await matcher.match_and_relocate(session, exc, run_id)
-            await session.commit()
-
-        # Step 4: Classify income + create income lots
-        async with db.get_session() as session:
-            val = ValuationV4(exc)
-            classifier = IncomeClassifierV4(exc, val)
-            results["income"] = await classifier.classify(session, run_id)
-            await session.commit()
-
-        async with db.get_session() as session:
-            val = ValuationV4(exc)
-            engine = TaxEngineV4(exc, val)
-            inc_count = await engine.create_income_lots(session, run_id)
-            results["income_lots"] = inc_count
-            await session.commit()
-
-        # Step 5: Process disposals + Form 8949
-        async with db.get_session() as session:
-            val = ValuationV4(exc)
-            engine = TaxEngineV4(exc, val)
-            results["compute"] = await engine.process_disposals_and_report(session, run_id, year=year)
-            await session.commit()
-
-        # Step 6: Classify funding flows
-        async with db.get_session() as session:
-            from flow_classifier import FlowClassifier
-            fc = FlowClassifier()
-            results["funding_flows"] = await fc.classify_all(session, run_id)
-            await session.commit()
-
-        # Step 7: Compute data coverage
-        async with db.get_session() as session:
-            from data_coverage import DataCoverageTracker
-            tracker = DataCoverageTracker()
-            results["data_coverage"] = await tracker.compute_coverage(session, run_id, year)
-            await session.commit()
-
-        # Step 8: Check data coverage gaps (stop-ship)
-        blockers = []
-        warnings_list = []
-        try:
-            from exchanges.mexc import MEXCExchange, MEXC_RETENTION
-            mexc_ex = get_exchange("mexc", settings)
-            if mexc_ex and isinstance(mexc_ex, MEXCExchange):
-                tax_year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
-                coverage = mexc_ex.get_data_coverage(since=tax_year_start)
-                for endpoint, info in coverage.items():
-                    if info["has_gap"]:
-                        # Check if CSV import covers the gap
-                        async with db.get_session() as session:
-                            from sqlalchemy import text as t
-                            r = await session.execute(t("""
-                                SELECT COUNT(*) FROM tax.csv_imports
-                                WHERE exchange = 'mexc' AND date_range_start <= :start
-                            """), {"start": tax_year_start})
-                            csv_covers = (r.scalar() or 0) > 0
-
-                        if not csv_covers:
-                            msg = (f"BLOCKING: MEXC {info['description']} only covers last "
-                                   f"{info['retention_days']} days. Tax year {year} requires "
-                                   f"data from {year}-01-01. Import official MEXC CSV exports.")
-                            blockers.append(msg)
-                            exc.log("BLOCKING", "DATA_COVERAGE_GAP", msg,
-                                    tax_year=year, blocks_filing=True)
-        except Exception as e:
-            logger.warning(f"Data coverage check failed: {e}")
-
-        # Flush exceptions
-        async with db.get_session() as session:
-            exc_count = await exc.flush(session)
-            filing_status = await ExceptionManager.check_filing_ready(session, year, run_id=run_id)
-            await session.commit()
-
-        # Override filing_ready if blockers found
-        if blockers:
-            filing_status["filing_ready"] = False
-            filing_status["blockers"] = blockers
-
-        # Update manifest
-        async with db.get_session() as session:
-            counts = exc.get_counts()
-            await _update_run_manifest(session, run_id,
-                status="completed" if filing_status["filing_ready"] else "filing_blocked",
-                stats={
-                    "total_events": results["normalize"].get("events_created", 0),
-                    "total_disposals": results["compute"].get("disposals_processed", 0),
-                    "total_exceptions": exc_count,
-                    "blocking_exceptions": filing_status.get("blocking_count", 0),
-                    "filing_ready": filing_status["filing_ready"],
-                })
-            await session.commit()
-
-        results["run_id"] = run_id
-        results["exceptions_logged"] = exc_count
-        results["filing_status"] = filing_status
-        results["filing_ready"] = filing_status["filing_ready"]
-        results["blockers"] = blockers
-        results["warnings"] = warnings_list
-        return results
-
+@app.post("/v4/compute-all")
+async def v4_compute_all(year: int = Query(None)):
+    """Full v4 pipeline: normalize -> match transfers -> classify income -> FIFO -> Form 8949."""
+    if year is None:
+        year = datetime.now(timezone.utc).year
+    try:
+        return await _compute_v4_full(year)
     except Exception as e:
         logger.exception(f"v4 compute-all failed: {e}")
         raise HTTPException(500, str(e))

@@ -404,7 +404,7 @@ class TestDataQualityChecks:
 
     def test_data_quality_wired_into_compute(self):
         import main as m
-        source = inspect.getsource(m.v4_compute_all)
+        source = inspect.getsource(m._compute_v4_full)
         assert "validate_data_quality" in source
 
     @pytest.mark.asyncio
