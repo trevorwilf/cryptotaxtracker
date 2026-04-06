@@ -88,6 +88,13 @@
   .btn-purple:hover { background:rgba(168,85,247,0.15); }
   .btn-danger { background:var(--red-bg); color:var(--red); border-color:rgba(239,68,68,0.3); }
   .btn-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:1.25rem; }
+  .import-row { transition: all 0.2s; }
+  .import-row:hover { border-color: var(--border-bright) !important; }
+  .wallet-entity { background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:1.25rem; margin-bottom:1rem; }
+  .wallet-entity:hover { border-color:var(--border-bright); }
+  .wallet-account { background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:0.75rem; margin:0.5rem 0; margin-left:1.5rem; }
+  .wallet-address { font-family:'JetBrains Mono',monospace; font-size:11px; padding:4px 8px; background:var(--bg-primary); border-radius:4px; margin:4px 0; display:flex; justify-content:space-between; align-items:center; }
+  .wallet-address .addr-text { color:var(--text-secondary); max-width:300px; overflow:hidden; text-overflow:ellipsis; }
 
   select,input[type="number"] { font-family:'JetBrains Mono',monospace; font-size:12px;
     background:var(--bg-input); color:var(--text-primary); border:1px solid var(--border);
@@ -148,6 +155,11 @@
       <button class="nav-btn" onclick="showPage('fees',this)">Fees</button>
     </div>
     <div class="nav-group">
+      <span class="nav-group-label">Import</span>
+      <button class="nav-btn" onclick="showPage('import',this)">Upload</button>
+      <button class="nav-btn" onclick="showPage('wallets',this)">Wallets</button>
+    </div>
+    <div class="nav-group">
       <span class="nav-group-label">v4 Filing</span>
       <button class="nav-btn" onclick="showPage('v4-pipeline',this)">Pipeline</button>
       <button class="nav-btn" onclick="showPage('v4-events',this)">Events</button>
@@ -167,6 +179,7 @@
     <div class="nav-group">
       <span class="nav-group-label">Export</span>
       <button class="nav-btn" onclick="showPage('export',this)">Download</button>
+      <button class="nav-btn" onclick="showPage('logs',this)">Logs</button>
     </div>
   </div>
 </div>
@@ -347,6 +360,117 @@
       <button class="btn btn-purple" onclick="window.open('/export/tax-report?year='+document.getElementById('exportYear').value)">⬇ Full Tax Report (Form 8949)</button>
       <button class="btn btn-secondary" onclick="window.open('/export/xlsx'+(document.getElementById('exportYear').value?'?year='+document.getElementById('exportYear').value:''))">⬇ Raw Trade Report</button>
     </div>
+  </div>
+</div>
+
+<!-- ═══ LOG VIEWER ═════════════════════════════════════════ -->
+<div class="page" id="page-logs">
+  <div class="card">
+    <div class="card-title">📜 Application Logs</div>
+    <div class="input-group" style="margin-bottom:1rem">
+      <div><label>Log File</label>
+        <select id="logFile" onchange="loadLogs()">
+          <option value="tax-collector.log">Main (tax-collector.log)</option>
+          <option value="api.log">API Calls (api.log)</option>
+          <option value="errors.log">Errors & Warnings (errors.log)</option>
+          <option value="imports.log">Imports (imports.log)</option>
+        </select>
+      </div>
+      <div><label>Lines</label>
+        <input type="number" id="logLines" value="200" min="50" max="2000" style="width:80px">
+      </div>
+      <div><label>Filter Level</label>
+        <select id="logLevel">
+          <option value="">All</option>
+          <option value="DEBUG">DEBUG</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="loadLogs()">Load</button>
+      <button class="btn btn-secondary" onclick="autoRefreshLogs()">Auto-Refresh</button>
+    </div>
+  </div>
+  <div class="card">
+    <div id="logViewerHeader" style="display:flex;justify-content:space-between;margin-bottom:8px">
+      <span class="card-title" style="margin:0">Log Output</span>
+      <span id="logFileInfo" style="font-size:11px;color:var(--text-dim)"></span>
+    </div>
+    <div class="console" id="logViewer" style="max-height:600px;font-size:11px;line-height:1.6"></div>
+  </div>
+</div>
+
+<!-- ═══ IMPORT & RECONCILIATION ════════════════════════════ -->
+<div class="page" id="page-import">
+  <div class="card" id="importStep1">
+    <div class="card-title">📤 Step 1 — Upload Exchange Export File</div>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:1rem;line-height:1.7">
+      Upload a CSV or XLSX export from your exchange. The file will be parsed and analyzed —
+      <strong style="color:var(--text-primary)">nothing is imported until you review and confirm every row</strong>.
+    </p>
+    <div id="importDropZone" style="border:2px dashed var(--border-bright);border-radius:10px;padding:3rem;text-align:center;cursor:pointer;transition:all 0.2s;margin-bottom:1rem"
+         ondragover="event.preventDefault();this.style.borderColor='var(--green)';this.style.background='var(--green-bg)'"
+         ondragleave="this.style.borderColor='var(--border-bright)';this.style.background='transparent'"
+         ondrop="handleFileDrop(event)"
+         onclick="document.getElementById('importFileInput').click()">
+      <div style="font-size:32px;margin-bottom:8px">📁</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Drop file here or click to browse</div>
+      <div style="font-size:12px;color:var(--text-dim)">Supports: MEXC (.xlsx), NonKYC (.csv)</div>
+    </div>
+    <input type="file" id="importFileInput" accept=".csv,.xlsx,.xls" style="display:none" onchange="handleFileSelect(this)">
+    <div id="importFileInfo" style="display:none" class="console"></div>
+  </div>
+  <div id="importStep2" style="display:none">
+    <div class="stat-grid" id="importStats"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary importFilter active" onclick="filterImportRows('all',this)">All <span id="importCountAll" class="badge badge-blue">0</span></button>
+      <button class="btn btn-secondary importFilter" onclick="filterImportRows('NEW',this)">New <span id="importCountNew" class="badge badge-blue">0</span></button>
+      <button class="btn btn-secondary importFilter" onclick="filterImportRows('TRANSFER',this)">Transfers <span id="importCountTransfer" class="badge badge-amber">0</span></button>
+      <button class="btn btn-secondary importFilter" onclick="filterImportRows('MATCH',this)">Duplicates <span id="importCountMatch" class="badge badge-green">0</span></button>
+      <button class="btn btn-secondary importFilter" onclick="filterImportRows('CONFLICT',this)">Conflicts <span id="importCountConflict" class="badge badge-red">0</span></button>
+      <div style="flex:1"></div>
+      <button class="btn btn-primary" onclick="importSelectAllNew()">✅ Import All New</button>
+      <button class="btn btn-secondary" onclick="importSkipAllDuplicates()">⏭️ Skip All Duplicates</button>
+    </div>
+    <div class="card">
+      <div class="card-title">📋 Step 2 — Review Each Record</div>
+      <div id="importRowsContainer"></div>
+    </div>
+    <div class="card" style="border-color:var(--green);background:rgba(34,197,94,0.03)">
+      <div class="card-title" style="color:var(--green)">✅ Step 3 — Confirm Import</div>
+      <div id="importDecisionSummary" style="font-size:13px;color:var(--text-secondary);margin-bottom:1rem"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="commitImport()" id="importCommitBtn" disabled>Confirm & Import Selected Records</button>
+        <button class="btn btn-danger" onclick="cancelImport()">Cancel — Discard Everything</button>
+      </div>
+    </div>
+    <div class="card" id="importResultsCard" style="display:none">
+      <div class="card-title">Import Results</div>
+      <div class="console" id="importResultsConsole"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ WALLET MANAGEMENT ══════════════════════════════════ -->
+<div class="page" id="page-wallets">
+  <div class="card">
+    <div class="card-title">🏦 Wallet Entities & Addresses</div>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:1rem;line-height:1.7">
+      Register your wallet addresses so the system can identify self-transfers.
+      When a withdrawal goes TO a claimed address, the transfer matcher will classify it as a
+      <strong style="color:var(--green)">non-taxable self-transfer</strong>.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="loadWallets()">🔄 Refresh</button>
+      <button class="btn btn-purple" onclick="showAddWalletForm()">+ Add Wallet Entity</button>
+      <button class="btn btn-secondary" onclick="autoDiscoverAddresses()">🔍 Auto-Discover from History</button>
+    </div>
+  </div>
+  <div id="walletEntities"></div>
+  <div id="walletAutoDiscover" style="display:none" class="card">
+    <div class="card-title">🔍 Auto-Discovered Addresses</div>
+    <div id="walletDiscoverResults"></div>
   </div>
 </div>
 
@@ -582,7 +706,7 @@ function showPage(id,btn){
   document.getElementById('page-'+id).classList.add('active');
   if(btn)btn.classList.add('active');
   stopSalviumPoll();
-  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats,'sal-overview':startSalviumPoll};
+  const loaders={'overview':loadOverview,'sync':loadSyncStatus,'prices':loadPriceStats,'sal-overview':startSalviumPoll,'wallets':loadWallets,'logs':loadLogs};
   if(loaders[id])loaders[id]();
 }
 function fU(v){if(!v||v==='None'||v==='null')return'—';const n=parseFloat(v);if(isNaN(n))return'—';return(n>=1000?'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):n>=1?'$'+n.toFixed(2):'$'+n.toFixed(6));}
@@ -1013,6 +1137,277 @@ async function stakeAll(){
   const stakeAmount=(unlocked-0.01).toFixed(2);
   document.getElementById('stakeAmount').value=stakeAmount;
   doStake();
+}
+
+// ── Log Viewer ──────────────────────────────────────────
+let logRefreshInterval=null;
+async function loadLogs(){
+  const file=document.getElementById('logFile').value;
+  const lines=document.getElementById('logLines').value;
+  const level=document.getElementById('logLevel').value;
+  const viewer=document.getElementById('logViewer');
+  let url=`/logs?file=${file}&lines=${lines}`;
+  if(level)url+=`&level=${level}`;
+  const d=await api(url);
+  if(!d){viewer.innerHTML='<span class="log-err">Failed to load logs</span>';return;}
+  document.getElementById('logFileInfo').textContent=`${d.returned} of ${d.total_lines} lines`;
+  viewer.innerHTML=d.lines.map(line=>{
+    let cls='log-info';
+    if(line.includes('] ERROR '))cls='log-err';
+    else if(line.includes('] WARNING '))cls='log-warn';
+    else if(line.includes('] DEBUG '))cls='cell-dim';
+    return`<div class="${cls}">${escapeHtml(line)}</div>`;
+  }).join('');
+  viewer.scrollTop=viewer.scrollHeight;
+}
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function autoRefreshLogs(){
+  if(logRefreshInterval){clearInterval(logRefreshInterval);logRefreshInterval=null;return;}
+  loadLogs();logRefreshInterval=setInterval(loadLogs,5000);
+}
+
+// ── Import & Reconciliation ─────────────────────────────
+let importStageData = null;
+
+function handleFileDrop(e) {
+  e.preventDefault();
+  e.target.style.borderColor='var(--border-bright)';
+  e.target.style.background='transparent';
+  const file = e.dataTransfer.files[0];
+  if(file) uploadFile(file);
+}
+function handleFileSelect(input) {
+  const file = input.files[0];
+  if(file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+  const info=document.getElementById('importFileInfo');
+  info.style.display='block';
+  info.innerHTML=`<span class="log-info">Uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)...</span>`;
+  const formData=new FormData();
+  formData.append('file', file);
+  try {
+    const resp=await fetch('/v4/import/stage',{method:'POST',body:formData});
+    if(!resp.ok){const err=await resp.json();info.innerHTML+=`<div class="log-err">Error: ${err.detail||JSON.stringify(err)}</div>`;return;}
+    importStageData=await resp.json();
+    info.innerHTML+=`<div class="log-ok">Parsed ${importStageData.file_info.filename}</div>`;
+    info.innerHTML+=`<div class="log-ok">Detected: ${importStageData.file_info.detected_exchange.toUpperCase()} ${importStageData.file_info.detected_type} (${importStageData.file_info.parser})</div>`;
+    info.innerHTML+=`<div class="log-ok">${importStageData.summary.total_rows} rows found: ${importStageData.summary.new} new, ${importStageData.summary.transfers} potential transfers, ${importStageData.summary.matches} duplicates</div>`;
+    renderImportReview();
+  } catch(e) { info.innerHTML+=`<div class="log-err">Upload failed: ${e}</div>`; }
+}
+
+function renderImportRow(row, index) {
+  const statusColors={'MATCH':{bg:'var(--green-bg)',color:'var(--green)',icon:'🟢',label:'Duplicate'},'TRANSFER':{bg:'var(--amber-bg)',color:'var(--amber)',icon:'🟡',label:'Potential Transfer'},'NEW':{bg:'var(--blue-bg)',color:'var(--blue)',icon:'🔵',label:'New Record'},'CONFLICT':{bg:'var(--red-bg)',color:'var(--red)',icon:'🔴',label:'Conflict'}};
+  const st=statusColors[row.status]||statusColors['NEW'];
+  const p=row.parsed;
+  let matchHtml='';
+  if(row.match){
+    const m=row.match;
+    matchHtml=`<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;margin:8px 0">
+      <div style="font-size:11px;color:var(--green);font-weight:600;margin-bottom:6px">EXISTING RECORD (${m.existing_table})</div>
+      <div style="font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text-secondary)">ID: ${m.existing_id} | Exchange: ${m.existing_exchange} | Amount: ${m.existing_amount} | Date: ${fD(m.existing_confirmed_at)}</div>
+      ${Object.keys(m.differences||{}).length>0?`<div style="margin-top:6px;font-size:11px;color:var(--amber)">Differences: ${Object.entries(m.differences).map(([k,v])=>`${k}: "${v.existing}" → "${v.imported}"`).join(', ')}</div>`:'<div style="margin-top:4px;font-size:11px;color:var(--green)">✓ Exact match — no differences</div>'}
+    </div>`;
+  }
+  if(row.transfer_candidates&&row.transfer_candidates.length>0){
+    matchHtml+=row.transfer_candidates.map((tc,ci)=>`<div style="background:var(--amber-bg);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:12px;margin:8px 0">
+      <div style="font-size:11px;color:var(--amber);font-weight:600;margin-bottom:6px">🔗 POTENTIAL TRANSFER MATCH (${tc.confidence} confidence)</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px">${tc.direction}</div>
+      <div style="font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text-secondary)">${tc.other_record.exchange.toUpperCase()} ${tc.other_record.table.split('.')[1]}: ${tc.other_record.amount} ${tc.other_record.asset} | TX: ${(tc.other_record.tx_hash||'').substring(0,20)}... | Date: ${fD(tc.other_record.confirmed_at)}</div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:4px">Evidence: ${tc.evidence.join(', ')}</div>
+      <button class="btn btn-purple" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="linkTransfer(${index},${tc.other_record.id})">🔗 Link as Self-Transfer</button>
+    </div>`).join('');
+  }
+  const ca=row.decision||'';
+  const actionHtml=`<div style="display:flex;gap:6px;margin-top:8px" id="importActions_${index}">
+    <button class="btn ${ca==='IMPORT'?'btn-primary':'btn-secondary'}" style="font-size:11px;padding:4px 12px" onclick="setImportDecision(${index},'IMPORT')">✅ Import</button>
+    <button class="btn ${ca==='SKIP'?'btn-danger':'btn-secondary'}" style="font-size:11px;padding:4px 12px" onclick="setImportDecision(${index},'SKIP')">⏭️ Skip</button>
+    ${row.match&&Object.keys(row.match.differences||{}).length>0?`<button class="btn ${ca==='IMPORT_UPDATE'?'btn-purple':'btn-secondary'}" style="font-size:11px;padding:4px 12px" onclick="setImportDecision(${index},'IMPORT_UPDATE')">🔄 Update Existing</button>`:''}
+  </div>`;
+  return `<div class="import-row" data-status="${row.status}" data-row="${index}" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;border-left:3px solid ${st.color};background:${row.decision?'var(--bg-card)':'var(--bg-input)'}">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px">${st.icon}</span><span class="badge" style="background:${st.bg};color:${st.color}">${st.label}</span><span style="font-size:12px;font-weight:600">${p.asset}</span><span style="font-size:12px;color:var(--text-secondary)">${p.amount}</span></div>
+      <span style="font-size:11px;color:var(--text-dim)">${fD(p.confirmed_at)}</span>
+    </div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:4px">TX: ${(p.tx_hash||'—').substring(0,40)}${(p.tx_hash||'').length>40?'...':''} ${p.address?` | Addr: ${p.address.substring(0,24)}...`:''} ${p.network?` | Net: ${p.network}`:''} ${p.fee?` | Fee: ${p.fee} ${p.fee_asset||p.asset}`:''}</div>
+    ${matchHtml}${actionHtml}
+  </div>`;
+}
+
+function renderImportReview() {
+  if(!importStageData) return;
+  const d=importStageData;
+  document.getElementById('importStep2').style.display='block';
+  document.getElementById('importStats').innerHTML=`
+    <div class="stat-card"><div class="stat-label">Total Rows</div><div class="stat-value">${d.summary.total_rows}</div></div>
+    <div class="stat-card"><div class="stat-label">New Records</div><div class="stat-value" style="color:var(--blue)">${d.summary.new}</div></div>
+    <div class="stat-card"><div class="stat-label">Transfer Matches</div><div class="stat-value" style="color:var(--amber)">${d.summary.transfers}</div></div>
+    <div class="stat-card"><div class="stat-label">Duplicates</div><div class="stat-value" style="color:var(--green)">${d.summary.matches}</div></div>
+    <div class="stat-card"><div class="stat-label">Conflicts</div><div class="stat-value" style="color:var(--red)">${d.summary.conflicts}</div></div>`;
+  document.getElementById('importCountAll').textContent=d.rows.length;
+  document.getElementById('importCountNew').textContent=d.summary.new;
+  document.getElementById('importCountTransfer').textContent=d.summary.transfers;
+  document.getElementById('importCountMatch').textContent=d.summary.matches;
+  document.getElementById('importCountConflict').textContent=d.summary.conflicts;
+  document.getElementById('importRowsContainer').innerHTML=d.rows.map((row,i)=>renderImportRow(row,i)).join('');
+  updateImportSummary();
+}
+
+function setImportDecision(rowIndex,action) {
+  importStageData.rows[rowIndex].decision=action;
+  const actionsEl=document.getElementById(`importActions_${rowIndex}`);
+  if(actionsEl){const btns=actionsEl.querySelectorAll('.btn');btns.forEach(b=>{b.className='btn btn-secondary';b.style.fontSize='11px';b.style.padding='4px 12px';});if(action==='IMPORT')btns[0].className='btn btn-primary';if(action==='SKIP')btns[1].className='btn btn-danger';if(action==='IMPORT_UPDATE'&&btns[2])btns[2].className='btn btn-purple';}
+  const rowEl=document.querySelector(`[data-row="${rowIndex}"]`);
+  if(rowEl){rowEl.style.background=action?'var(--bg-card)':'var(--bg-input)';rowEl.style.opacity=action==='SKIP'?'0.5':'1';}
+  updateImportSummary();
+}
+
+function linkTransfer(rowIndex,otherRecordId) {
+  importStageData.rows[rowIndex].decision='IMPORT';
+  importStageData.rows[rowIndex].link_transfer_id=otherRecordId;
+  const rowEl=document.querySelector(`[data-row="${rowIndex}"]`);
+  if(rowEl){rowEl.style.borderLeftColor='var(--green)';rowEl.style.background='var(--green-bg)';}
+  const actionsEl=document.getElementById(`importActions_${rowIndex}`);
+  if(actionsEl){actionsEl.innerHTML=`<span class="badge badge-green" style="padding:6px 12px;font-size:11px">🔗 Linked as transfer to record #${otherRecordId}</span><button class="btn btn-secondary" style="font-size:11px;padding:4px 12px" onclick="unlinkTransfer(${rowIndex})">Undo</button>`;}
+  updateImportSummary();
+}
+
+function unlinkTransfer(rowIndex) {
+  importStageData.rows[rowIndex].decision=null;
+  importStageData.rows[rowIndex].link_transfer_id=null;
+  const container=document.getElementById('importRowsContainer');
+  const rowEl=container.querySelector(`[data-row="${rowIndex}"]`);
+  if(rowEl){const temp=document.createElement('div');temp.innerHTML=renderImportRow(importStageData.rows[rowIndex],rowIndex);rowEl.replaceWith(temp.firstElementChild);}
+  updateImportSummary();
+}
+
+function importSelectAllNew(){importStageData.rows.forEach((row,i)=>{if(row.status==='NEW'&&!row.decision)setImportDecision(i,'IMPORT');});}
+function importSkipAllDuplicates(){importStageData.rows.forEach((row,i)=>{if(row.status==='MATCH')setImportDecision(i,'SKIP');});}
+function filterImportRows(status,btn){document.querySelectorAll('.importFilter').forEach(b=>b.classList.remove('active'));btn.classList.add('active');document.querySelectorAll('.import-row').forEach(el=>{el.style.display=(status==='all'||el.dataset.status===status)?'':'none';});}
+
+function updateImportSummary() {
+  if(!importStageData) return;
+  const rows=importStageData.rows;
+  const importing=rows.filter(r=>r.decision==='IMPORT'||r.decision==='IMPORT_UPDATE').length;
+  const skipping=rows.filter(r=>r.decision==='SKIP').length;
+  const linked=rows.filter(r=>r.link_transfer_id).length;
+  const undecided=rows.filter(r=>!r.decision).length;
+  document.getElementById('importDecisionSummary').innerHTML=`<strong style="color:var(--green)">${importing}</strong> to import ${linked>0?`(<strong style="color:var(--purple)">${linked}</strong> linked as transfers)`:''} · <strong style="color:var(--text-dim)">${skipping}</strong> to skip · ${undecided>0?`<strong style="color:var(--amber)">${undecided}</strong> still need your decision`:'<strong style="color:var(--green)">All rows reviewed ✓</strong>'}`;
+  const commitBtn=document.getElementById('importCommitBtn');
+  commitBtn.disabled=undecided>0;
+  commitBtn.textContent=undecided>0?`Review ${undecided} remaining row${undecided!==1?'s':''} before importing`:`Confirm & Import ${importing} Record${importing!==1?'s':''}`;
+}
+
+async function commitImport() {
+  if(!importStageData) return;
+  const undecided=importStageData.rows.filter(r=>!r.decision).length;
+  if(undecided>0){alert(`Please review all ${undecided} remaining rows before importing.`);return;}
+  const importing=importStageData.rows.filter(r=>r.decision==='IMPORT'||r.decision==='IMPORT_UPDATE').length;
+  if(!confirm(`Import ${importing} records into the database? This cannot be undone.`)) return;
+  const decisions=importStageData.rows.map(r=>({row_num:r.row_num,action:r.decision,link_transfer_id:r.link_transfer_id||null}));
+  const resultsCard=document.getElementById('importResultsCard');
+  const resultsConsole=document.getElementById('importResultsConsole');
+  resultsCard.style.display='block';
+  resultsConsole.innerHTML='<span class="log-info">Committing import...</span>';
+  try {
+    const resp=await fetch('/v4/import/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage_id:importStageData.stage_id,decisions:decisions})});
+    const result=await resp.json();
+    if(resp.ok){
+      resultsConsole.innerHTML+=`<div class="log-ok">✅ Import complete!</div><div class="log-ok">  Imported: ${result.results.imported}</div><div class="log-ok">  Skipped: ${result.results.skipped}</div>${result.results.linked_transfers?`<div class="log-ok">  Linked transfers: ${result.results.linked_transfers}</div>`:''}${result.results.updated?`<div class="log-ok">  Updated: ${result.results.updated}</div>`:''}${result.results.errors?`<div class="log-err">  Errors: ${result.results.errors}</div>`:''}`;
+      document.getElementById('importCommitBtn').disabled=true;
+      document.getElementById('importCommitBtn').textContent='✅ Import Committed';
+    } else { resultsConsole.innerHTML+=`<div class="log-err">Error: ${result.detail||JSON.stringify(result)}</div>`; }
+  } catch(e) { resultsConsole.innerHTML+=`<div class="log-err">Failed: ${e}</div>`; }
+}
+
+function cancelImport(){
+  if(!confirm('Discard all staged data? You will need to re-upload the file.')) return;
+  importStageData=null;
+  document.getElementById('importStep2').style.display='none';
+  document.getElementById('importFileInfo').style.display='none';
+  document.getElementById('importResultsCard').style.display='none';
+  document.getElementById('importFileInput').value='';
+}
+
+// ── Wallets Page ────────────────────────────────────────
+async function loadWallets() {
+  const el=document.getElementById('walletEntities');
+  el.innerHTML='<div style="color:var(--text-dim);padding:1rem">Loading...</div>';
+  try {
+    const resp=await fetch('/v4/wallet/entities');
+    const entities=await resp.json();
+    if(!entities.length){el.innerHTML='<div class="card" style="color:var(--text-secondary)">No wallet entities yet. Click "+ Add Wallet Entity" to get started.</div>';return;}
+    el.innerHTML=entities.map(e=>`<div class="wallet-entity">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div><span class="badge badge-purple">${e.entity_type}</span> <strong style="margin-left:6px">${e.label}</strong></div>
+        <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px" onclick="addAccountToEntity(${e.id})">+ Account</button>
+      </div>
+      ${(e.accounts||[]).map(a=>`<div class="wallet-account">
+        <div style="margin-bottom:6px"><span class="badge badge-blue">${a.account_type}</span> ${a.exchange_name?`<span class="badge badge-green">${a.exchange_name}</span>`:''} <strong style="margin-left:4px;font-size:12px">${a.label}</strong>
+          <button class="btn btn-secondary" style="font-size:10px;padding:2px 8px;margin-left:8px" onclick="addAddressToAccount(${a.id})">+ Address</button>
+        </div>
+        ${(a.addresses||[]).map(addr=>`<div class="wallet-address">
+          <span class="addr-text" title="${addr.address}">${addr.address}</span>
+          <span style="color:var(--text-dim);font-size:10px">${addr.chain||''} ${addr.label?'— '+addr.label:''}</span>
+        </div>`).join('')}
+      </div>`).join('')}
+    </div>`).join('');
+  } catch(e) { el.innerHTML=`<div class="card" style="color:var(--red)">Error loading wallets: ${e}</div>`; }
+}
+
+function showAddWalletForm() {
+  const label=prompt('Entity label (e.g. "My Personal Wallets"):');
+  if(!label) return;
+  const type=prompt('Entity type (taxpayer / spouse / business):','taxpayer');
+  if(!type) return;
+  fetch(`/v4/wallet/entities?entity_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}`,{method:'POST'}).then(()=>loadWallets());
+}
+
+function addAccountToEntity(entityId) {
+  const label=prompt('Account label (e.g. "MEXC Main Account"):');
+  if(!label) return;
+  const type=prompt('Account type (exchange / hardware_wallet / software_wallet):','exchange');
+  const exName=type==='exchange'?prompt('Exchange name (mexc / nonkyc):',''):null;
+  let url=`/v4/wallet/accounts?entity_id=${entityId}&account_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}`;
+  if(exName) url+=`&exchange_name=${encodeURIComponent(exName)}`;
+  fetch(url,{method:'POST'}).then(()=>loadWallets());
+}
+
+function addAddressToAccount(accountId) {
+  const addr=prompt('Blockchain address:');
+  if(!addr) return;
+  const chain=prompt('Chain (bitcoin / ethereum / solana / salvium):','');
+  const label=prompt('Label (optional):','');
+  let url=`/v4/wallet/addresses?account_id=${accountId}&address=${encodeURIComponent(addr)}`;
+  if(chain) url+=`&chain=${encodeURIComponent(chain)}`;
+  if(label) url+=`&label=${encodeURIComponent(label)}`;
+  fetch(url,{method:'POST'}).then(r=>r.json()).then(res=>{
+    if(res.id){
+      const claimType=prompt('Claim this address as self_owned? (yes/no)','yes');
+      if(claimType==='yes'){
+        fetch(`/v4/wallet/claims?address_id=${res.id}&claim_type=self_owned&confidence=verified`,{method:'POST'}).then(()=>loadWallets());
+      } else { loadWallets(); }
+    }
+  });
+}
+
+async function autoDiscoverAddresses() {
+  const el=document.getElementById('walletAutoDiscover');
+  const results=document.getElementById('walletDiscoverResults');
+  el.style.display='block';
+  results.innerHTML='<div style="color:var(--text-dim)">Scanning...</div>';
+  try {
+    const resp=await fetch('/v4/wallet/auto-discover',{method:'POST'});
+    const data=await resp.json();
+    if(!data.suggestions||!data.suggestions.length){results.innerHTML='<div style="color:var(--text-secondary)">No cross-exchange address overlaps found.</div>';return;}
+    results.innerHTML=`<div style="margin-bottom:8px;color:var(--text-secondary);font-size:12px">${data.suggestions.length} address(es) found on multiple exchanges:</div>`+
+      data.suggestions.map(s=>`<div style="background:var(--amber-bg);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin-bottom:6px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)">${s.address.substring(0,40)}...</div>
+        <div style="font-size:11px;color:var(--amber);margin-top:4px">${s.reason||s.suggestion}</div>
+      </div>`).join('');
+  } catch(e) { results.innerHTML=`<div style="color:var(--red)">Error: ${e}</div>`; }
 }
 
 // ── Init ─────────────────────────────────────────────────

@@ -29,11 +29,90 @@ from tax_engine import TaxEngine
 from transfer_matcher import TransferMatcher
 from income_classifier import IncomeClassifier
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from logging.handlers import TimedRotatingFileHandler
+
+LOG_DIR = os.environ.get("LOG_DIR", "/data/logs")
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def setup_logging():
+    """Configure logging to stdout + rotating log files."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+    # Console handler (stdout)
+    console = logging.StreamHandler()
+    console.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+    # Main log file — rotates daily, keeps 90 days
+    try:
+        main_handler = TimedRotatingFileHandler(
+            os.path.join(LOG_DIR, "tax-collector.log"),
+            when="midnight", interval=1, backupCount=90, utc=True,
+        )
+        main_handler.setLevel(logging.INFO)
+        main_handler.setFormatter(formatter)
+        main_handler.suffix = "%Y-%m-%d"
+        root.addHandler(main_handler)
+    except (PermissionError, OSError) as e:
+        root.warning(f"Could not create main log file: {e} — logging to stdout only")
+
+    # API log file — DEBUG+ for exchange API loggers
+    try:
+        api_handler = TimedRotatingFileHandler(
+            os.path.join(LOG_DIR, "api.log"),
+            when="midnight", interval=1, backupCount=30, utc=True,
+        )
+        api_handler.setLevel(logging.DEBUG)
+        api_handler.setFormatter(formatter)
+        api_handler.suffix = "%Y-%m-%d"
+        for api_logger_name in ["tax-collector.api", "tax-collector.nonkyc",
+                                 "tax-collector.mexc", "tax-collector.parser",
+                                 "tax-collector.schema-registry",
+                                 "tax-collector.price-oracle"]:
+            logging.getLogger(api_logger_name).addHandler(api_handler)
+    except (PermissionError, OSError) as e:
+        root.warning(f"Could not create API log file: {e}")
+
+    # Error log file — WARNING+ only
+    try:
+        error_handler = TimedRotatingFileHandler(
+            os.path.join(LOG_DIR, "errors.log"),
+            when="midnight", interval=1, backupCount=180, utc=True,
+        )
+        error_handler.setLevel(logging.WARNING)
+        error_handler.setFormatter(formatter)
+        error_handler.suffix = "%Y-%m-%d"
+        root.addHandler(error_handler)
+    except (PermissionError, OSError) as e:
+        root.warning(f"Could not create error log file: {e}")
+
+    # Import log file — tracks file imports
+    try:
+        import_handler = TimedRotatingFileHandler(
+            os.path.join(LOG_DIR, "imports.log"),
+            when="midnight", interval=1, backupCount=365, utc=True,
+        )
+        import_handler.setLevel(logging.DEBUG)
+        import_handler.setFormatter(formatter)
+        import_handler.suffix = "%Y-%m-%d"
+        logging.getLogger("tax-collector.csv-importer").addHandler(import_handler)
+        logging.getLogger("tax-collector.transfer-preview").addHandler(import_handler)
+    except (PermissionError, OSError) as e:
+        root.warning(f"Could not create import log file: {e}")
+
+    root.info(f"Logging initialized: level={LOG_LEVEL}, dir={LOG_DIR}")
+
+
+setup_logging()
 logger = logging.getLogger("tax-collector")
 
 settings = Settings()
@@ -322,6 +401,57 @@ async def dashboard():
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "2.0.0", "exchanges": settings.enabled_exchanges}
+
+
+# ── Log viewer endpoints ──────────────────────────────────────────────────
+
+@app.get("/logs")
+async def get_logs(file: str = Query("tax-collector.log"),
+                   lines: int = Query(200),
+                   level: str = Query(None)):
+    """View recent log entries."""
+    allowed_files = {"tax-collector.log", "api.log", "errors.log", "imports.log"}
+    if file not in allowed_files:
+        raise HTTPException(400, f"Invalid log file. Choose from: {allowed_files}")
+
+    log_path = os.path.join(LOG_DIR, file)
+    if not os.path.exists(log_path):
+        return {"file": file, "lines": [], "total_lines": 0, "returned": 0,
+                "note": "Log file not created yet"}
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+
+        if level:
+            all_lines = [l for l in all_lines if f"] {level.upper()} " in l]
+
+        recent = all_lines[-lines:]
+        return {
+            "file": file,
+            "total_lines": len(all_lines),
+            "returned": len(recent),
+            "lines": [l.rstrip() for l in recent],
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error reading log: {e}")
+
+
+@app.get("/logs/files")
+async def list_log_files():
+    """List available log files with sizes."""
+    files = []
+    if os.path.isdir(LOG_DIR):
+        for f in sorted(os.listdir(LOG_DIR)):
+            fp = os.path.join(LOG_DIR, f)
+            if os.path.isfile(fp):
+                files.append({
+                    "name": f,
+                    "size_bytes": os.path.getsize(fp),
+                    "size_human": f"{os.path.getsize(fp)/1024:.1f} KB",
+                    "modified": os.path.getmtime(fp),
+                })
+    return {"log_dir": LOG_DIR, "files": files}
 
 
 # ── Sync endpoints ───────────────────────────────────────────────────────
@@ -1130,6 +1260,121 @@ async def v4_run_history():
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# STAGED IMPORT / RECONCILIATION ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+from fastapi import UploadFile, File
+import tempfile
+import shutil
+from import_staging import (
+    parse_file, analyze_matches, commit_staged,
+    _staged_imports, _create_stage_id, _cleanup_expired_stages, get_staged,
+)
+
+
+@app.post("/v4/import/stage")
+async def import_stage(file: UploadFile = File(...)):
+    """Upload and parse a file without importing. Returns parsed rows with match analysis."""
+    _cleanup_expired_stages()
+
+    # Save uploaded file to temp location
+    upload_dir = os.path.join(tempfile.gettempdir(), "tax-collector-uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_path = os.path.join(upload_dir, file.filename or "upload")
+    try:
+        with open(temp_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    finally:
+        await file.close()
+
+    try:
+        # Parse the file
+        parsed_data = parse_file(temp_path)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+    finally:
+        # Cleanup temp file
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+    # Run match analysis against the database
+    async with db.get_session() as session:
+        parsed_data = await analyze_matches(session, parsed_data)
+
+    # Store in memory
+    stage_id = _create_stage_id()
+    import time as _time
+    _staged_imports[stage_id] = {
+        "created_at": _time.time(),
+        "parsed_data": parsed_data,
+        "committed": False,
+    }
+
+    return {
+        "stage_id": stage_id,
+        "file_info": parsed_data["file_info"],
+        "summary": parsed_data["summary"],
+        "rows": parsed_data["rows"],
+    }
+
+
+@app.post("/v4/import/commit")
+async def import_commit(payload: dict):
+    """Commit a staged import. Only approved rows are written to DB."""
+    stage_id = payload.get("stage_id")
+    decisions = payload.get("decisions", [])
+
+    if not stage_id:
+        raise HTTPException(400, "stage_id is required")
+
+    stage = get_staged(stage_id)
+    if not stage:
+        raise HTTPException(404, f"Stage {stage_id} not found or expired")
+
+    if stage.get("committed"):
+        raise HTTPException(409, "This import has already been committed")
+
+    # Check for undecided rows
+    decision_map = {d["row_num"]: d for d in decisions}
+    undecided = [r for r in stage["parsed_data"]["rows"]
+                 if r["row_num"] not in decision_map]
+    if undecided:
+        raise HTTPException(400, f"{len(undecided)} rows have no decision. "
+                                 "Every row must have an action (IMPORT, SKIP, etc.)")
+
+    async with db.get_session() as session:
+        try:
+            results = await commit_staged(session, stage_id, decisions)
+            await session.commit()
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        except Exception as e:
+            logger.exception(f"Import commit failed: {e}")
+            raise HTTPException(500, str(e))
+
+    return {
+        "stage_id": stage_id,
+        "committed": True,
+        "results": results,
+    }
+
+
+@app.get("/v4/import/history")
+async def import_history():
+    """List past imports with metadata."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT id, exchange, data_type, filename, file_hash, row_count,
+                   imported_count, duplicate_count, error_count,
+                   date_range_start, date_range_end, imported_at
+            FROM tax.csv_imports ORDER BY imported_at DESC LIMIT 100
+        """))
+        imports = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    return {"count": len(imports), "imports": imports}
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # ACCOUNTANT HANDOFF ENDPOINTS (Phases 2-7)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1159,24 +1404,235 @@ async def v4_data_coverage(year: int = Query(None)):
 @app.post("/v4/import-file")
 @app.post("/v4/import-csv")
 async def import_file(filepath: str = Query(...),
-                      exchange: str = Query(None), data_type: str = Query(None)):
+                      exchange: str = Query(None), data_type: str = Query(None),
+                      preview_matches: bool = Query(False)):
     """Import a CSV/XLSX file to supplement API data.
 
     Auto-detects format by extension + header fingerprinting.
     Optional exchange/data_type overrides skip auto-detection.
+    Set preview_matches=true to scan for potential transfer matches after import.
     Accepts a server-side filepath (upload the file to the server first).
     """
-    from csv_importer import CSVImporter
+    from csv_importer import CSVImporter, detect_format
 
     if not os.path.exists(filepath):
         raise HTTPException(400, f"File not found: {filepath}")
+
+    # Auto-detect format if not provided
+    if not exchange or not data_type:
+        try:
+            det_exchange, det_type, _ = detect_format(filepath)
+            exchange = exchange or det_exchange
+            data_type = data_type or det_type
+        except ValueError:
+            pass  # will fall through to generic import
 
     importer = CSVImporter()
     async with db.get_session() as session:
         result = await importer.import_file(session, filepath,
                                             exchange=exchange, data_type=data_type)
         await session.commit()
+
+    # Transfer match preview
+    if preview_matches and result.get("imported", 0) > 0 and exchange and data_type:
+        from transfer_preview import TransferPreview
+        preview = TransferPreview(time_window_hours=72, fee_tolerance_pct=10.0)
+
+        async with db.get_session() as session:
+            from sqlalchemy import text as t
+            if data_type == "deposits":
+                id_result = await session.execute(t("""
+                    SELECT id FROM tax.deposits
+                    WHERE exchange = :ex AND source_file = :sf
+                    ORDER BY id DESC LIMIT :limit
+                """), {"ex": exchange, "sf": os.path.basename(filepath),
+                       "limit": result["imported"]})
+                imported_ids = [r[0] for r in id_result.fetchall()]
+
+                result["transfer_matches"] = await preview.scan_imported_deposits(
+                    session, imported_ids, exchange
+                )
+                result["address_suggestions"] = await preview.scan_address_overlaps(
+                    session, imported_ids, "deposits"
+                )
+
+            elif data_type == "withdrawals":
+                id_result = await session.execute(t("""
+                    SELECT id FROM tax.withdrawals
+                    WHERE exchange = :ex AND source_file = :sf
+                    ORDER BY id DESC LIMIT :limit
+                """), {"ex": exchange, "sf": os.path.basename(filepath),
+                       "limit": result["imported"]})
+                imported_ids = [r[0] for r in id_result.fetchall()]
+
+                result["transfer_matches"] = await preview.scan_imported_withdrawals(
+                    session, imported_ids, exchange
+                )
+                result["address_suggestions"] = await preview.scan_address_overlaps(
+                    session, imported_ids, "withdrawals"
+                )
+
+        match_count = len(result.get("transfer_matches", []))
+        addr_count = len(result.get("address_suggestions", []))
+        if match_count > 0:
+            logger.info(f"[import] Found {match_count} potential transfer matches for imported {data_type}")
+        if addr_count > 0:
+            logger.info(f"[import] Found {addr_count} address overlap suggestions for imported {data_type}")
+
     return result
+
+
+@app.post("/v4/import-file-preview")
+async def import_file_preview(filepath: str = Query(...),
+                               exchange: str = Query(None),
+                               data_type: str = Query(None)):
+    """Import a file AND preview potential transfer matches.
+
+    Convenience alias for import-file with preview_matches=true.
+    """
+    from csv_importer import CSVImporter, detect_format
+    from transfer_preview import TransferPreview
+
+    if not os.path.exists(filepath):
+        raise HTTPException(400, f"File not found: {filepath}")
+
+    if not exchange or not data_type:
+        try:
+            det_exchange, det_type, _ = detect_format(filepath)
+            exchange = exchange or det_exchange
+            data_type = data_type or det_type
+        except ValueError:
+            pass
+
+    importer = CSVImporter()
+    async with db.get_session() as session:
+        result = await importer.import_file(session, filepath,
+                                            exchange=exchange, data_type=data_type)
+        await session.commit()
+
+    if result.get("imported", 0) > 0 and exchange and data_type:
+        preview = TransferPreview(time_window_hours=72, fee_tolerance_pct=10.0)
+        async with db.get_session() as session:
+            from sqlalchemy import text as t
+            table = "deposits" if data_type == "deposits" else "withdrawals"
+            id_result = await session.execute(t(f"""
+                SELECT id FROM tax.{table}
+                WHERE exchange = :ex AND source_file = :sf
+                ORDER BY id DESC LIMIT :limit
+            """), {"ex": exchange, "sf": os.path.basename(filepath),
+                   "limit": result["imported"]})
+            imported_ids = [r[0] for r in id_result.fetchall()]
+
+            if data_type == "deposits":
+                result["transfer_matches"] = await preview.scan_imported_deposits(
+                    session, imported_ids, exchange)
+                result["address_suggestions"] = await preview.scan_address_overlaps(
+                    session, imported_ids, "deposits")
+            elif data_type == "withdrawals":
+                result["transfer_matches"] = await preview.scan_imported_withdrawals(
+                    session, imported_ids, exchange)
+                result["address_suggestions"] = await preview.scan_address_overlaps(
+                    session, imported_ids, "withdrawals")
+
+    return result
+
+
+@app.get("/v4/transfer-preview")
+async def transfer_preview_scan(exchange: str = Query(None),
+                                 asset: str = Query(None),
+                                 days: int = Query(90)):
+    """Scan existing deposits and withdrawals for potential transfer matches
+    that haven't been matched yet.
+
+    Useful for finding matches BEFORE running compute-all, or for
+    discovering matches that the compute pipeline missed due to
+    wider time windows or looser tolerances.
+    """
+    from transfer_preview import TransferPreview
+    preview = TransferPreview(time_window_hours=72, fee_tolerance_pct=10.0)
+
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+
+        dep_where = "WHERE 1=1"
+        wd_where = "WHERE 1=1"
+        params = {}
+        if exchange:
+            dep_where += " AND d.exchange = :ex"
+            wd_where += " AND w.exchange = :ex"
+            params["ex"] = exchange
+        if asset:
+            dep_where += " AND d.asset = :asset"
+            wd_where += " AND w.asset = :asset"
+            params["asset"] = asset.upper()
+
+        # Unmatched deposits
+        dep_result = await session.execute(t(f"""
+            SELECT d.id FROM tax.deposits d
+            LEFT JOIN tax.normalized_events ne
+                ON ne.source_deposit_id = d.id AND ne.event_type = 'TRANSFER_IN'
+            {dep_where}
+              AND ne.id IS NULL
+            ORDER BY d.confirmed_at DESC
+            LIMIT 500
+        """), params)
+        unmatched_dep_ids = [r[0] for r in dep_result.fetchall()]
+
+        # Unmatched withdrawals
+        wd_result = await session.execute(t(f"""
+            SELECT w.id FROM tax.withdrawals w
+            LEFT JOIN tax.normalized_events ne
+                ON ne.source_withdrawal_id = w.id AND ne.event_type = 'TRANSFER_OUT'
+            {wd_where}
+              AND ne.id IS NULL
+            ORDER BY w.confirmed_at DESC
+            LIMIT 500
+        """), params)
+        unmatched_wd_ids = [r[0] for r in wd_result.fetchall()]
+
+        results = {
+            "unmatched_deposits": len(unmatched_dep_ids),
+            "unmatched_withdrawals": len(unmatched_wd_ids),
+        }
+
+        # Scan for matches
+        all_matches = []
+        for dep_id in unmatched_dep_ids:
+            dep_matches = await preview.scan_imported_deposits(
+                session, [dep_id], exchange or ""
+            )
+            all_matches.extend(dep_matches)
+
+        for wd_id in unmatched_wd_ids:
+            wd_matches = await preview.scan_imported_withdrawals(
+                session, [wd_id], exchange or ""
+            )
+            all_matches.extend(wd_matches)
+
+        # Deduplicate (same pair can be found from both sides)
+        seen_pairs = set()
+        deduped = []
+        for m in all_matches:
+            pair_key = tuple(sorted([
+                f"{m['imported_record']['exchange']}:{m['imported_record']['id']}",
+                f"{m['existing_record']['exchange']}:{m['existing_record']['id']}"
+            ]))
+            if pair_key not in seen_pairs:
+                seen_pairs.add(pair_key)
+                deduped.append(m)
+
+        results["potential_matches"] = deduped
+        results["match_count"] = len(deduped)
+
+        # Address overlap suggestions
+        if unmatched_dep_ids:
+            results["address_suggestions"] = await preview.scan_address_overlaps(
+                session, unmatched_dep_ids, "deposits"
+            )
+        else:
+            results["address_suggestions"] = []
+
+    return results
 
 
 @app.get("/v4/csv-imports")

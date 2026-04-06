@@ -36,8 +36,10 @@
       # MEXC credentials
       - MEXC_API_KEY=${MEXC_API_KEY}
       - MEXC_API_SECRET=${MEXC_API_SECRET}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - /mnt/sharedrive/apps/hummingbot/tax-collector/exports:/app/exports
+      - /mnt/sharedrive/apps/hummingbot/tax-collector/logs:/data/logs
     healthcheck:
       test:
         [
