@@ -361,6 +361,21 @@
       <button class="btn btn-secondary" onclick="window.open('/export/xlsx'+(document.getElementById('exportYear').value?'?year='+document.getElementById('exportYear').value:''))">⬇ Raw Trade Report</button>
     </div>
   </div>
+  <div class="card" style="margin-top:1rem">
+    <div class="card-title">🗄️ Debug — Export Database Tables</div>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:1rem;line-height:1.7">
+      Dump every <code style="color:var(--cyan)">tax.*</code> table to CSV for debugging.
+      Files are saved to <code style="color:var(--cyan)">/data/logs/tables/</code> and can be
+      downloaded as a zip. Share with Claude when troubleshooting.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="exportTables()" id="exportTablesBtn">🗄️ Export All Tables</button>
+      <button class="btn btn-secondary" onclick="window.open('/v4/export-tables/download')" id="downloadTablesBtn" style="display:none">⬇ Download ZIP</button>
+    </div>
+    <div id="exportTablesResult" style="display:none;margin-top:1rem">
+      <div class="console" id="exportTablesConsole" style="max-height:300px"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ LOG VIEWER ═════════════════════════════════════════ -->
@@ -1408,6 +1423,31 @@ async function autoDiscoverAddresses() {
         <div style="font-size:11px;color:var(--amber);margin-top:4px">${s.reason||s.suggestion}</div>
       </div>`).join('');
   } catch(e) { results.innerHTML=`<div style="color:var(--red)">Error: ${e}</div>`; }
+}
+
+// ── Table Export ─────────────────────────────────────────
+async function exportTables(){
+  const btn=document.getElementById('exportTablesBtn');
+  const resultDiv=document.getElementById('exportTablesResult');
+  const con=document.getElementById('exportTablesConsole');
+  const dlBtn=document.getElementById('downloadTablesBtn');
+  btn.disabled=true;btn.textContent='⏳ Exporting...';
+  resultDiv.style.display='block';
+  con.innerHTML='<span class="log-info">Exporting all tax.* tables...</span>';
+  try{
+    const resp=await fetch('/v4/export-tables',{method:'POST'});
+    const d=await resp.json();
+    if(resp.ok){
+      con.innerHTML+=`<div class="log-ok">✅ Exported ${d.tables_exported} tables (${d.total_rows.toLocaleString()} total rows)</div>`;
+      con.innerHTML+=`<div class="log-info">Export time: ${d.export_time}</div>`;
+      con.innerHTML+=`<div class="log-info">Location: ${d.export_dir}</div>`;
+      con.innerHTML+=`<div class="log-info">Files:</div>`;
+      d.files.forEach(f=>{con.innerHTML+=`<div class="cell-dim">  ${f}</div>`;});
+      if(d.errors&&d.errors.length>0){d.errors.forEach(e=>{con.innerHTML+=`<div class="log-err">  ERROR: ${e.table} — ${e.error}</div>`;});}
+      dlBtn.style.display='inline-flex';
+    } else {con.innerHTML+=`<div class="log-err">Failed: ${d.detail||JSON.stringify(d)}</div>`;}
+  }catch(e){con.innerHTML+=`<div class="log-err">Error: ${e}</div>`;}
+  btn.disabled=false;btn.textContent='🗄️ Export All Tables';
 }
 
 // ── Init ─────────────────────────────────────────────────

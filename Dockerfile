@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ /app/
 
 # Export output directory (separate from /app to avoid volume mount conflicts)
-RUN mkdir -p /data/exports /data/logs
+RUN mkdir -p /data/exports /data/logs /data/logs/tables
 
 # Healthcheck — verify FastAPI is responding
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
