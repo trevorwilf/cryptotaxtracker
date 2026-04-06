@@ -140,33 +140,55 @@ class MEXCExchange(BaseExchange):
         return coverage
 
     async def fetch_transfers(self, since: datetime | None = None) -> list[dict]:
-        """Fetch MEXC universal transfer history (internal account transfers)."""
-        params = {"limit": 500}
-        if since:
-            params["startTime"] = str(int(since.timestamp() * 1000))
-        try:
-            raw = await self._get("/api/v3/capital/transfer", params)
-        except Exception as e:
-            logger.warning(f"Universal transfer fetch failed: {e}")
-            return []
-        if isinstance(raw, dict):
-            raw = raw.get("rows", raw.get("data", []))
-        if not isinstance(raw, list):
-            return []
-        transfers = []
-        for t in raw:
-            transfers.append({
-                "exchange": self.name,
-                "exchange_id": str(t.get("tranId", "")),
-                "asset": t.get("asset", ""),
-                "amount": str(t.get("amount", "0")),
-                "from_account": t.get("fromAccountType", ""),
-                "to_account": t.get("toAccountType", ""),
-                "status": t.get("status", ""),
-                "timestamp": self._parse_ts(t.get("timestamp")),
-                "raw_data": json.dumps(t),
-            })
-        return transfers
+        """Fetch MEXC universal transfer history. Queries both directions separately.
+
+        MEXC API requires fromAccountType and toAccountType as mandatory params,
+        and uses page/size (not limit) for pagination.
+        """
+        all_transfers = []
+        directions = [("SPOT", "FUTURES"), ("FUTURES", "SPOT")]
+        for from_acct, to_acct in directions:
+            page = 1
+            while True:
+                params = {
+                    "fromAccountType": from_acct,
+                    "toAccountType": to_acct,
+                    "size": "100",
+                    "page": str(page),
+                }
+                if since:
+                    params["startTime"] = str(int(since.timestamp() * 1000))
+                try:
+                    raw = await self._get("/api/v3/capital/transfer", params)
+                except Exception as e:
+                    logger.warning(f"Transfer fetch {from_acct}->{to_acct} page {page} failed: {e}")
+                    break
+                if isinstance(raw, dict):
+                    rows = raw.get("rows", raw.get("data", []))
+                    total = raw.get("total", 0)
+                elif isinstance(raw, list):
+                    rows = raw
+                    total = len(raw)
+                else:
+                    break
+                if not rows:
+                    break
+                for t in rows:
+                    all_transfers.append({
+                        "exchange": self.name,
+                        "exchange_id": str(t.get("tranId", "")),
+                        "asset": t.get("asset", ""),
+                        "amount": str(t.get("amount", "0")),
+                        "from_account": t.get("fromAccountType", from_acct),
+                        "to_account": t.get("toAccountType", to_acct),
+                        "status": t.get("status", ""),
+                        "transferred_at": self._parse_ts(t.get("timestamp")),
+                        "raw_data": json.dumps(t),
+                    })
+                if len(all_transfers) >= total or len(rows) < 100:
+                    break
+                page += 1
+        return all_transfers
 
     async def fetch_trades(self, since: datetime | None = None) -> list[dict]:
         symbols = await self._get_traded_symbols()
@@ -238,22 +260,46 @@ class MEXCExchange(BaseExchange):
                 logger.warning(f"Failed fetching orders for {symbol}: {e}")
         return all_orders
 
+    async def _fetch_chunked_history(self, endpoint: str, since: datetime | None,
+                                     row_mapper, label: str) -> list[dict]:
+        """Fetch history in 7-day chunks to respect MEXC API constraints.
+
+        Verified constraints: startTime/endTime diff must be <= 7 days,
+        max lookback is 90 days (use 89 to be safe).
+        """
+        results = []
+        now = datetime.now(timezone.utc)
+        max_lookback = now - timedelta(days=89)
+        chunk_start = max(since, max_lookback) if since else max_lookback
+
+        while chunk_start < now:
+            chunk_end = min(chunk_start + timedelta(days=7), now)
+            params = {
+                "startTime": str(int(chunk_start.timestamp() * 1000)),
+                "endTime": str(int(chunk_end.timestamp() * 1000)),
+                "limit": "1000",
+            }
+            try:
+                raw = await self._get(endpoint, params)
+            except Exception as e:
+                logger.warning(f"MEXC {label} chunk {chunk_start.date()}-{chunk_end.date()} failed: {e}")
+                chunk_start = chunk_end
+                continue
+            if not isinstance(raw, list):
+                raw = raw.get("data", raw.get("result", []))
+            if not isinstance(raw, list):
+                raw = []
+            for d in raw:
+                results.append(row_mapper(d))
+            if raw:
+                logger.info(f"MEXC {label} chunk {chunk_start.date()}-{chunk_end.date()}: {len(raw)} rows")
+            chunk_start = chunk_end
+
+        return results
+
     async def fetch_deposits(self, since: datetime | None = None) -> list[dict]:
-        params = {"limit": 1000}
-        if since:
-            params["startTime"] = str(int(since.timestamp() * 1000))
-        try:
-            raw = await self._get("/api/v3/capital/deposit/hisrec", params)
-        except Exception as e:
-            logger.warning(f"Deposit history fetch failed: {e}")
-            return []
-        if not isinstance(raw, list):
-            raw = raw.get("data", raw.get("result", []))
-        if not isinstance(raw, list):
-            return []
-        deposits = []
-        for d in raw:
-            deposits.append({
+        def mapper(d):
+            return {
                 "exchange": self.name,
                 "exchange_id": str(d.get("id", d.get("txId", ""))),
                 "asset": d.get("coin", d.get("currency", "")),
@@ -265,31 +311,19 @@ class MEXCExchange(BaseExchange):
                 "asset_price_usd": None, "amount_usd": None,
                 "confirmed_at": self._parse_ts(d.get("insertTime", d.get("completeTime"))),
                 "raw_data": json.dumps(d),
-            })
-        return deposits
+            }
+        return await self._fetch_chunked_history(
+            "/api/v3/capital/deposit/hisrec", since, mapper, "deposits")
 
     async def fetch_withdrawals(self, since: datetime | None = None) -> list[dict]:
-        params = {"limit": 1000}
-        if since:
-            params["startTime"] = str(int(since.timestamp() * 1000))
-        try:
-            raw = await self._get("/api/v3/capital/withdraw/history", params)
-        except Exception as e:
-            logger.warning(f"Withdrawal history fetch failed: {e}")
-            return []
-        if not isinstance(raw, list):
-            raw = raw.get("data", raw.get("result", []))
-        if not isinstance(raw, list):
-            return []
-        withdrawals = []
-        for w in raw:
-            withdrawals.append({
+        def mapper(w):
+            return {
                 "exchange": self.name,
                 "exchange_id": str(w.get("id", w.get("txId", ""))),
                 "asset": w.get("coin", w.get("currency", "")),
                 "amount": str(w.get("amount", "0")),
                 "fee": str(w.get("transactionFee", w.get("fee", "0"))),
-                "fee_asset": w.get("coin", w.get("currency", "")),  # MEXC fees in same asset
+                "fee_asset": w.get("coin", w.get("currency", "")),
                 "network": w.get("network", ""),
                 "tx_hash": w.get("txId", ""),
                 "address": w.get("address", ""),
@@ -297,8 +331,9 @@ class MEXCExchange(BaseExchange):
                 "asset_price_usd": None, "amount_usd": None, "fee_usd": None,
                 "confirmed_at": self._parse_ts(w.get("completeTime", w.get("applyTime"))),
                 "raw_data": json.dumps(w),
-            })
-        return withdrawals
+            }
+        return await self._fetch_chunked_history(
+            "/api/v3/capital/withdraw/history", since, mapper, "withdrawals")
 
     async def fetch_pool_activity(self, since: datetime | None = None) -> list[dict]:
         return []

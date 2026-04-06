@@ -77,7 +77,11 @@ class TestEndToEndScenario:
             "status": "6",
             "completeTime": 1710503600000,
         }]
-        with patch.object(ex, '_get', return_value=payload):
+        call_count = [0]
+        async def mock_get(path, params=None, signed=True):
+            call_count[0] += 1
+            return payload if call_count[0] == 1 else []
+        with patch.object(ex, '_get', side_effect=mock_get):
             wds = await ex.fetch_withdrawals()
 
         assert len(wds) == 1

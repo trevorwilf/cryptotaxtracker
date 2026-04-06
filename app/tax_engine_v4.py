@@ -316,13 +316,16 @@ class TaxEngineV4:
                                  source_event_id=ev["id"], run_id=run_id)
 
             # Find lots for (wallet, asset) with remaining > 0, scoped to run_id
+            # Temporal constraint: only lots acquired on or before the disposal date
             lot_result = await session.execute(text("""
                 SELECT id, remaining::text, cost_per_unit_usd::text,
                        original_acquired_at, source_type
                 FROM tax.lots_v4
                 WHERE wallet = :wallet AND asset = :asset AND remaining > 0 AND run_id = :run_id
+                  AND original_acquired_at <= :disposed_at
                 ORDER BY original_acquired_at ASC, id ASC
-            """), {"wallet": wallet, "asset": asset, "run_id": run_id})
+            """), {"wallet": wallet, "asset": asset, "run_id": run_id,
+                   "disposed_at": disposed_at})
             lots = [dict(zip(lot_result.keys(), row))
                     for row in lot_result.fetchall()]
 
@@ -360,6 +363,14 @@ class TaxEngineV4:
 
                 # Holding period: >365 for long-term (NOT >=365)
                 holding_days = (disposed_at - lot["original_acquired_at"]).days
+                if holding_days < 0:
+                    self.exc.log(BLOCKING, "FUTURE_LOT_USED",
+                                 f"Disposal {ev['id']} would consume lot {lot['id']} acquired "
+                                 f"{lot['original_acquired_at']} for disposal at {disposed_at} "
+                                 f"(holding_days={holding_days}). Skipping this lot.",
+                                 source_event_id=ev["id"], lot_id=lot["id"],
+                                 tax_year=disposed_at.year, run_id=run_id)
+                    continue  # Skip future-dated lots
                 term = "long" if holding_days > 365 else "short"
 
                 disp = DisposalV4(

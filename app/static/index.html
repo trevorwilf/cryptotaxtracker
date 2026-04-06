@@ -1281,7 +1281,7 @@ function setImportDecision(rowIndex,action) {
 }
 
 function linkTransfer(rowIndex,otherRecordId) {
-  importStageData.rows[rowIndex].decision='IMPORT';
+  importStageData.rows[rowIndex].decision='LINK_TRANSFER';
   importStageData.rows[rowIndex].link_transfer_id=otherRecordId;
   const rowEl=document.querySelector(`[data-row="${rowIndex}"]`);
   if(rowEl){rowEl.style.borderLeftColor='var(--green)';rowEl.style.background='var(--green-bg)';}
@@ -1306,7 +1306,7 @@ function filterImportRows(status,btn){document.querySelectorAll('.importFilter')
 function updateImportSummary() {
   if(!importStageData) return;
   const rows=importStageData.rows;
-  const importing=rows.filter(r=>r.decision==='IMPORT'||r.decision==='IMPORT_UPDATE').length;
+  const importing=rows.filter(r=>r.decision==='IMPORT'||r.decision==='IMPORT_UPDATE'||r.decision==='LINK_TRANSFER').length;
   const skipping=rows.filter(r=>r.decision==='SKIP').length;
   const linked=rows.filter(r=>r.link_transfer_id).length;
   const undecided=rows.filter(r=>!r.decision).length;
@@ -1320,7 +1320,7 @@ async function commitImport() {
   if(!importStageData) return;
   const undecided=importStageData.rows.filter(r=>!r.decision).length;
   if(undecided>0){alert(`Please review all ${undecided} remaining rows before importing.`);return;}
-  const importing=importStageData.rows.filter(r=>r.decision==='IMPORT'||r.decision==='IMPORT_UPDATE').length;
+  const importing=importStageData.rows.filter(r=>r.decision==='IMPORT'||r.decision==='IMPORT_UPDATE'||r.decision==='LINK_TRANSFER').length;
   if(!confirm(`Import ${importing} records into the database? This cannot be undone.`)) return;
   const decisions=importStageData.rows.map(r=>({row_num:r.row_num,action:r.decision,link_transfer_id:r.link_transfer_id||null}));
   const resultsCard=document.getElementById('importResultsCard');

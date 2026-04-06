@@ -583,6 +583,35 @@ CREATE TABLE IF NOT EXISTS tax.wallet_address_claims (
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS tax.import_stages (
+    id TEXT PRIMARY KEY,
+    exchange TEXT NOT NULL,
+    data_type TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    file_hash TEXT NOT NULL,
+    row_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'staged',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    committed_at TIMESTAMPTZ,
+    expired_at TIMESTAMPTZ,
+    metadata JSONB
+);
+
+CREATE TABLE IF NOT EXISTS tax.import_stage_rows (
+    id SERIAL PRIMARY KEY,
+    stage_id TEXT NOT NULL REFERENCES tax.import_stages(id) ON DELETE CASCADE,
+    row_index INTEGER NOT NULL,
+    parsed JSONB NOT NULL,
+    raw JSONB,
+    status TEXT NOT NULL DEFAULT 'new',
+    match_info JSONB,
+    decision TEXT,
+    result TEXT,
+    result_id INTEGER,
+    error TEXT,
+    UNIQUE(stage_id, row_index)
+);
+
 CREATE TABLE IF NOT EXISTS tax.wallet_claim_evidence (
     id              SERIAL PRIMARY KEY,
     claim_id        INTEGER NOT NULL REFERENCES tax.wallet_address_claims(id),

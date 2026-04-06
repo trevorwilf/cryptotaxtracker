@@ -258,7 +258,11 @@ class TestMEXCUniversalTransferFixture:
             "status": "CONFIRMED",
             "timestamp": 1712937600000,
         }]}
-        with patch.object(self.ex, '_get', return_value=payload):
+        call_count = [0]
+        async def mock_get(path, params=None, signed=True):
+            call_count[0] += 1
+            return payload if call_count[0] == 1 else {"rows": []}
+        with patch.object(self.ex, '_get', side_effect=mock_get):
             result = await self.ex.fetch_transfers()
 
         assert len(result) == 1

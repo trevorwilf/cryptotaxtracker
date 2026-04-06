@@ -125,6 +125,7 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 sync_status: dict[str, dict] = {}
 backfill_status: dict = {"status": "idle"}
+_sync_lock = asyncio.Lock()
 
 
 # ── Sync logic ────────────────────────────────────────────────────────────
@@ -460,6 +461,8 @@ async def list_log_files():
 async def sync_exchange(exchange: str, full: bool = Query(False)):
     if exchange not in settings.enabled_exchanges:
         raise HTTPException(404, f"Exchange '{exchange}' not configured")
+    if _sync_lock.locked():
+        raise HTTPException(409, "Sync already in progress. Please wait.")
     asyncio.create_task(run_sync(exchange, full=full))
     return {"message": f"Sync started for {exchange}", "full": full}
 
@@ -834,6 +837,11 @@ async def v4_compute_all(year: int = Query(2025)):
         async with db.get_session() as session:
             await ExceptionManager.clear_for_run(session, run_id)
             await session.commit()
+
+        # Step 0.5: Data quality validation
+        async with db.get_session() as session:
+            from data_quality import validate_data_quality
+            await validate_data_quality(session, exc, run_id)
 
         # Step 1: Normalize
         async with db.get_session() as session:
@@ -1968,6 +1976,62 @@ async def wallet_auto_discover():
         "already_claimed": len(claimed),
         "suggestions": suggestions,
     }
+
+
+@app.delete("/v4/wallet/entities/{entity_id}")
+async def wallet_delete_entity(entity_id: int):
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        await session.execute(t("DELETE FROM tax.wallet_entities WHERE id = :id"), {"id": entity_id})
+        await session.commit()
+    return {"deleted": entity_id}
+
+
+@app.delete("/v4/wallet/accounts/{account_id}")
+async def wallet_delete_account(account_id: int):
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        await session.execute(t("DELETE FROM tax.wallet_accounts WHERE id = :id"), {"id": account_id})
+        await session.commit()
+    return {"deleted": account_id}
+
+
+@app.delete("/v4/wallet/addresses/{address_id}")
+async def wallet_delete_address(address_id: int):
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        await session.execute(t("DELETE FROM tax.wallet_addresses WHERE id = :id"), {"id": address_id})
+        await session.commit()
+    return {"deleted": address_id}
+
+
+@app.patch("/v4/wallet/claims/{claim_id}")
+async def wallet_update_claim(claim_id: int,
+                               review_status: str = Query(None),
+                               claim_type: str = Query(None)):
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        updates = []
+        params = {"id": claim_id}
+        if review_status:
+            updates.append("review_status = :rs")
+            params["rs"] = review_status
+        if claim_type:
+            updates.append("claim_type = :ct")
+            params["ct"] = claim_type
+        if updates:
+            await session.execute(t(f"UPDATE tax.wallet_address_claims SET {', '.join(updates)} WHERE id = :id"), params)
+            await session.commit()
+    return {"updated": claim_id}
+
+
+@app.delete("/v4/wallet/claims/{claim_id}")
+async def wallet_delete_claim(claim_id: int):
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        await session.execute(t("DELETE FROM tax.wallet_address_claims WHERE id = :id"), {"id": claim_id})
+        await session.commit()
+    return {"deleted": claim_id}
 
 
 # ══════════════════════════════════════════════════════════════════════════

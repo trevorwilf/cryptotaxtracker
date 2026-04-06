@@ -188,6 +188,10 @@ ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS source_type VARCHAR(30);
 ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS source_file VARCHAR(500);
 ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS source_type VARCHAR(30);
 ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS source_file VARCHAR(500);
+ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS external_tx_id TEXT;
+ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS external_tx_id TEXT;
+ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS child_asset VARCHAR(50);
+ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS child_asset VARCHAR(50);
 ALTER TABLE tax.pool_activity ADD COLUMN IF NOT EXISTS amount_in_usd NUMERIC(36,18);
 ALTER TABLE tax.pool_activity ADD COLUMN IF NOT EXISTS amount_out_usd NUMERIC(36,18);
 ALTER TABLE tax.pool_activity ADD COLUMN IF NOT EXISTS fee_usd NUMERIC(36,18);
@@ -358,9 +362,18 @@ class Database:
                          :asset_price_usd, :amount_usd, :confirmed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         status = EXCLUDED.status,
+                        amount = CASE WHEN tax.deposits.amount = 0 OR tax.deposits.amount IS NULL
+                                      THEN EXCLUDED.amount ELSE tax.deposits.amount END,
+                        tx_hash = CASE WHEN tax.deposits.tx_hash IS NULL OR tax.deposits.tx_hash = ''
+                                       THEN EXCLUDED.tx_hash ELSE tax.deposits.tx_hash END,
+                        address = CASE WHEN tax.deposits.address IS NULL OR tax.deposits.address = ''
+                                       THEN EXCLUDED.address ELSE tax.deposits.address END,
+                        network = CASE WHEN tax.deposits.network IS NULL OR tax.deposits.network = ''
+                                       THEN EXCLUDED.network ELSE tax.deposits.network END,
                         asset_price_usd = COALESCE(EXCLUDED.asset_price_usd, tax.deposits.asset_price_usd),
                         amount_usd = COALESCE(EXCLUDED.amount_usd, tax.deposits.amount_usd),
-                        confirmed_at = EXCLUDED.confirmed_at, raw_data = EXCLUDED.raw_data
+                        confirmed_at = COALESCE(EXCLUDED.confirmed_at, tax.deposits.confirmed_at),
+                        raw_data = EXCLUDED.raw_data
                 """),
                 d,
             )
@@ -384,11 +397,22 @@ class Database:
                          :asset_price_usd, :amount_usd, :fee_usd, :confirmed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         status = EXCLUDED.status,
+                        amount = CASE WHEN tax.withdrawals.amount = 0 OR tax.withdrawals.amount IS NULL
+                                      THEN EXCLUDED.amount ELSE tax.withdrawals.amount END,
+                        fee = CASE WHEN tax.withdrawals.fee IS NULL OR tax.withdrawals.fee = 0
+                                   THEN EXCLUDED.fee ELSE tax.withdrawals.fee END,
                         fee_asset = COALESCE(EXCLUDED.fee_asset, tax.withdrawals.fee_asset),
+                        tx_hash = CASE WHEN tax.withdrawals.tx_hash IS NULL OR tax.withdrawals.tx_hash = ''
+                                       THEN EXCLUDED.tx_hash ELSE tax.withdrawals.tx_hash END,
+                        address = CASE WHEN tax.withdrawals.address IS NULL OR tax.withdrawals.address = ''
+                                       THEN EXCLUDED.address ELSE tax.withdrawals.address END,
+                        network = CASE WHEN tax.withdrawals.network IS NULL OR tax.withdrawals.network = ''
+                                       THEN EXCLUDED.network ELSE tax.withdrawals.network END,
                         asset_price_usd = COALESCE(EXCLUDED.asset_price_usd, tax.withdrawals.asset_price_usd),
                         amount_usd = COALESCE(EXCLUDED.amount_usd, tax.withdrawals.amount_usd),
                         fee_usd = COALESCE(EXCLUDED.fee_usd, tax.withdrawals.fee_usd),
-                        confirmed_at = EXCLUDED.confirmed_at, raw_data = EXCLUDED.raw_data
+                        confirmed_at = COALESCE(EXCLUDED.confirmed_at, tax.withdrawals.confirmed_at),
+                        raw_data = EXCLUDED.raw_data
                 """),
                 w,
             )

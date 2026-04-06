@@ -44,6 +44,9 @@ class TransferMatcherV4:
         stats = {"matched_pairs": 0, "lots_relocated": 0,
                  "unmatched_withdrawals": 0, "unmatched_deposits": 0}
 
+        # Load approved wallet address claims for matching boost
+        wallet_claims = await self._load_wallet_claims(session)
+
         # Get unresolved withdrawal events
         wd_result = await session.execute(text("""
             SELECT ne.id, ne.wallet, ne.asset, ne.quantity::text, ne.event_at,
@@ -84,7 +87,7 @@ class TransferMatcherV4:
                 if dep["id"] in matched_dep_ids:
                     continue
 
-                confidence = self._check_match(wd, dep)
+                confidence = self._check_match(wd, dep, wallet_claims)
                 if confidence is None:
                     continue
 
@@ -142,7 +145,7 @@ class TransferMatcherV4:
         logger.info(f"Transfer matching complete: {stats}")
         return stats
 
-    def _check_match(self, wd: dict, dep: dict) -> str | None:
+    def _check_match(self, wd: dict, dep: dict, claims: dict = None) -> str | None:
         """Check if a withdrawal-deposit pair matches. Returns confidence or None."""
         # Same asset required
         if dep["asset"] != wd["asset"]:
@@ -172,12 +175,39 @@ class TransferMatcherV4:
         if diff_pct > self.fee_tolerance:
             return None
 
+        # Wallet claim boost: both addresses owned = high confidence self-transfer
+        if claims:
+            wd_addr = (wd.get("address") or "").lower()
+            dep_addr = (dep.get("address") or "").lower()
+            if wd_addr and dep_addr and wd_addr in claims and dep_addr in claims:
+                return "wallet_claim"
+
         # TX hash match = high confidence
         if (wd.get("tx_hash") and dep.get("tx_hash")
                 and wd["tx_hash"] == dep["tx_hash"]):
             return "tx_hash"
 
         return "amount_timing"
+
+    async def _load_wallet_claims(self, session: AsyncSession) -> dict:
+        """Load approved wallet address claims for transfer matching boost."""
+        try:
+            result = await session.execute(text("""
+                SELECT wa.address, wac.claim_type, wac.confidence
+                FROM tax.wallet_addresses wa
+                JOIN tax.wallet_address_claims wac ON wac.address_id = wa.id
+                WHERE wac.review_status IN ('confirmed', 'approved', 'pending')
+                  AND wac.claim_type IN ('self_owned', 'mine')
+            """))
+            claims = {}
+            for row in result.fetchall():
+                addr = row[0].lower() if row[0] else ""
+                if addr:
+                    claims[addr] = {"claim_type": row[1], "confidence": row[2]}
+            return claims
+        except Exception as e:
+            logger.debug(f"Could not load wallet claims (tables may not exist): {e}")
+            return {}
 
     async def _relocate_lots(self, session: AsyncSession,
                              wd: dict, dep: dict,
