@@ -181,6 +181,13 @@ ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS amount_usd NUMERIC(36,18);
 ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS asset_price_usd NUMERIC(36,18);
 ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS amount_usd NUMERIC(36,18);
 ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS fee_usd NUMERIC(36,18);
+ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS fee_asset VARCHAR(50);
+ALTER TABLE tax.trades ADD COLUMN IF NOT EXISTS source_type VARCHAR(30);
+ALTER TABLE tax.trades ADD COLUMN IF NOT EXISTS source_file VARCHAR(500);
+ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS source_type VARCHAR(30);
+ALTER TABLE tax.deposits ADD COLUMN IF NOT EXISTS source_file VARCHAR(500);
+ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS source_type VARCHAR(30);
+ALTER TABLE tax.withdrawals ADD COLUMN IF NOT EXISTS source_file VARCHAR(500);
 ALTER TABLE tax.pool_activity ADD COLUMN IF NOT EXISTS amount_in_usd NUMERIC(36,18);
 ALTER TABLE tax.pool_activity ADD COLUMN IF NOT EXISTS amount_out_usd NUMERIC(36,18);
 ALTER TABLE tax.pool_activity ADD COLUMN IF NOT EXISTS fee_usd NUMERIC(36,18);
@@ -364,16 +371,20 @@ class Database:
         if not withdrawals:
             return
         for w in withdrawals:
+            # Ensure fee_asset key exists for the query
+            if "fee_asset" not in w:
+                w["fee_asset"] = w.get("asset")
             await session.execute(
                 text("""
                     INSERT INTO tax.withdrawals
-                        (exchange, exchange_id, asset, amount, fee, network, tx_hash, address, status,
+                        (exchange, exchange_id, asset, amount, fee, fee_asset, network, tx_hash, address, status,
                          asset_price_usd, amount_usd, fee_usd, confirmed_at, raw_data)
                     VALUES
-                        (:exchange, :exchange_id, :asset, :amount, :fee, :network, :tx_hash, :address, :status,
+                        (:exchange, :exchange_id, :asset, :amount, :fee, :fee_asset, :network, :tx_hash, :address, :status,
                          :asset_price_usd, :amount_usd, :fee_usd, :confirmed_at, CAST(:raw_data AS jsonb))
                     ON CONFLICT (exchange, exchange_id) DO UPDATE SET
                         status = EXCLUDED.status,
+                        fee_asset = COALESCE(EXCLUDED.fee_asset, tax.withdrawals.fee_asset),
                         asset_price_usd = COALESCE(EXCLUDED.asset_price_usd, tax.withdrawals.asset_price_usd),
                         amount_usd = COALESCE(EXCLUDED.amount_usd, tax.withdrawals.amount_usd),
                         fee_usd = COALESCE(EXCLUDED.fee_usd, tax.withdrawals.fee_usd),
@@ -408,6 +419,31 @@ class Database:
             )
         last_ts = max((p["executed_at"] for p in pools), default=None)
         await self._update_sync_log(session, exchange, "pools", last_ts, len(pools))
+
+    # ── Exchange Transfers ──────────────────────────────────────────────
+
+    async def upsert_exchange_transfers(self, session: AsyncSession, exchange: str, transfers: list[dict]):
+        if not transfers:
+            return
+        for t in transfers:
+            await session.execute(
+                text("""
+                    INSERT INTO tax.exchange_transfers
+                        (exchange, exchange_id, asset, amount, from_account, to_account,
+                         status, asset_price_usd, amount_usd, transferred_at, raw_data)
+                    VALUES
+                        (:exchange, :exchange_id, :asset, :amount, :from_account, :to_account,
+                         :status, :asset_price_usd, :amount_usd, :transferred_at, CAST(:raw_data AS jsonb))
+                    ON CONFLICT (exchange, exchange_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        asset_price_usd = COALESCE(EXCLUDED.asset_price_usd, tax.exchange_transfers.asset_price_usd),
+                        amount_usd = COALESCE(EXCLUDED.amount_usd, tax.exchange_transfers.amount_usd),
+                        raw_data = EXCLUDED.raw_data
+                """),
+                t,
+            )
+        last_ts = max((t.get("transferred_at") for t in transfers if t.get("transferred_at")), default=None)
+        await self._update_sync_log(session, exchange, "transfers", last_ts, len(transfers))
 
     # ── Backfill: find records missing USD values ─────────────────────────
 

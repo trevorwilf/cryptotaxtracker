@@ -289,6 +289,7 @@ class MEXCExchange(BaseExchange):
                 "asset": w.get("coin", w.get("currency", "")),
                 "amount": str(w.get("amount", "0")),
                 "fee": str(w.get("transactionFee", w.get("fee", "0"))),
+                "fee_asset": w.get("coin", w.get("currency", "")),  # MEXC fees in same asset
                 "network": w.get("network", ""),
                 "tx_hash": w.get("txId", ""),
                 "address": w.get("address", ""),

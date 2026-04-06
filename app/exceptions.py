@@ -114,16 +114,21 @@ class ExceptionManager:
         return any(e["severity"] == BLOCKING for e in self._buffer)
 
     @staticmethod
-    async def check_filing_ready(session: AsyncSession, tax_year: int) -> dict:
+    async def check_filing_ready(session: AsyncSession, tax_year: int, run_id: int = None) -> dict:
         """Check if a tax year has any open blocking exceptions."""
-        result = await session.execute(text("""
+        run_filter = "AND run_id = :rid" if run_id else ""
+        params = {"year": tax_year}
+        if run_id:
+            params["rid"] = run_id
+        result = await session.execute(text(f"""
             SELECT severity, COUNT(*), COALESCE(SUM(dollar_exposure), 0)::text
             FROM tax.exceptions
             WHERE (affected_tax_year = :year OR affected_tax_year IS NULL)
               AND resolution_status = 'open'
+              {run_filter}
             GROUP BY severity
             ORDER BY severity
-        """), {"year": tax_year})
+        """), params)
 
         summary = {}
         total_blocking = 0

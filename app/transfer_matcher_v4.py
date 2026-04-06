@@ -47,7 +47,7 @@ class TransferMatcherV4:
         # Get unresolved withdrawal events
         wd_result = await session.execute(text("""
             SELECT ne.id, ne.wallet, ne.asset, ne.quantity::text, ne.event_at,
-                   w.tx_hash, w.fee::text, w.fee_asset, ne.source_withdrawal_id
+                   w.tx_hash, w.fee::text, COALESCE(w.fee_asset, w.asset) AS fee_asset, ne.source_withdrawal_id
             FROM tax.normalized_events ne
             LEFT JOIN tax.withdrawals w ON w.id = ne.source_withdrawal_id
             WHERE ne.event_type = 'UNRESOLVED'
@@ -197,15 +197,16 @@ class TransferMatcherV4:
         remaining_to_transfer = transfer_amount
         relocated = 0
 
-        # Find lots on source wallet in FIFO order
+        # Find lots on source wallet in FIFO order (run-scoped)
         lot_result = await session.execute(text("""
             SELECT id, original_quantity::text, remaining::text,
                    cost_per_unit_usd::text, original_acquired_at,
                    source_type
             FROM tax.lots_v4
             WHERE wallet = :wallet AND asset = :asset AND remaining > 0
+              AND run_id = :run_id
             ORDER BY original_acquired_at ASC, id ASC
-        """), {"wallet": source_wallet, "asset": asset})
+        """), {"wallet": source_wallet, "asset": asset, "run_id": run_id})
         lots = [dict(zip(lot_result.keys(), row)) for row in lot_result.fetchall()]
 
         for lot in lots:
@@ -253,7 +254,7 @@ class TransferMatcherV4:
                 "ta": wd["event_at"],
                 "txh": wd.get("tx_hash"),
                 "tf": str(wd_fee) if wd_fee > ZERO else None,
-                "tfa": asset if wd_fee > ZERO else None,
+                "tfa": wd.get("fee_asset", asset) if wd_fee > ZERO else None,
                 "wid": wd.get("source_withdrawal_id"),
                 "did": dep.get("source_deposit_id"),
                 "mc": confidence, "rid": run_id,
@@ -262,7 +263,7 @@ class TransferMatcherV4:
             co_id = co_row[0] if co_row else None
 
             # Create new lot on destination wallet — PRESERVING original_acquired_at
-            await session.execute(text("""
+            dest_lot_result = await session.execute(text("""
                 INSERT INTO tax.lots_v4
                     (asset, wallet, original_quantity, remaining,
                      cost_per_unit_usd, total_cost_usd,
@@ -275,6 +276,7 @@ class TransferMatcherV4:
                      :oaa, NOW(),
                      :seid, 'transfer_in',
                      :plid, :tcid, :rid)
+                RETURNING id
             """), {
                 "asset": asset, "wallet": dest_wallet,
                 "qty": str(consume), "remaining": str(consume),
@@ -284,6 +286,14 @@ class TransferMatcherV4:
                 "seid": dep["id"], "plid": lot["id"],
                 "tcid": co_id, "rid": run_id,
             })
+            dest_lot_row = dest_lot_result.fetchone()
+            dest_lot_id = dest_lot_row[0] if dest_lot_row else None
+
+            # Backfill dest_lot_id on the transfer_carryover record
+            if co_id and dest_lot_id:
+                await session.execute(text("""
+                    UPDATE tax.transfer_carryover SET dest_lot_id = :dlid WHERE id = :cid
+                """), {"dlid": dest_lot_id, "cid": co_id})
 
             remaining_to_transfer -= consume
             relocated += 1

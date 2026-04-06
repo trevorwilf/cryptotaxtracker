@@ -23,6 +23,12 @@ def mock_session():
     return MockSession()
 
 
+@pytest.fixture
+def fixtures_dir():
+    """Path to tests/fixtures/ directory."""
+    return os.path.join(os.path.dirname(__file__), "fixtures")
+
+
 @pytest_asyncio.fixture
 async def real_db():
     """Real database for integration tests. Requires test Postgres running."""

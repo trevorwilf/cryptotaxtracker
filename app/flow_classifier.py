@@ -33,11 +33,14 @@ class FlowClassifier:
         1. If deposit matched as TRANSFER_IN in normalized_events -> INTERNAL_TRANSFER_IN
         2. If deposit classified as income in income_events_v4 -> INCOME_RECEIPT
         3. If withdrawal matched as TRANSFER_OUT -> INTERNAL_TRANSFER_OUT
-        4. Remaining deposits -> EXTERNAL_DEPOSIT
-        5. Remaining withdrawals -> EXTERNAL_WITHDRAWAL
+        4. Remaining deposits/withdrawals -> UNCLASSIFIED (requires manual review)
         """
-        # Clear previous classifications
-        await session.execute(text("DELETE FROM tax.classified_flows"))
+        # Clear previous classifications (run-scoped if run_id provided)
+        if run_id:
+            await session.execute(text("DELETE FROM tax.classified_flows WHERE run_id = :rid"),
+                                  {"rid": run_id})
+        else:
+            await session.execute(text("DELETE FROM tax.classified_flows"))
 
         stats = {
             "EXTERNAL_DEPOSIT": 0, "EXTERNAL_WITHDRAWAL": 0,
@@ -45,11 +48,16 @@ class FlowClassifier:
             "INCOME_RECEIPT": 0, "UNCLASSIFIED": 0,
         }
 
+        # Build run filter for source queries
+        run_filter = "AND ne.run_id = :rid" if run_id else ""
+        run_params = {"rid": run_id} if run_id else {}
+
         # Get transfer-matched deposit IDs
-        r = await session.execute(text("""
-            SELECT DISTINCT source_deposit_id FROM tax.normalized_events
-            WHERE event_type = 'TRANSFER_IN' AND source_deposit_id IS NOT NULL
-        """))
+        r = await session.execute(text(f"""
+            SELECT DISTINCT ne.source_deposit_id FROM tax.normalized_events ne
+            WHERE ne.event_type = 'TRANSFER_IN' AND ne.source_deposit_id IS NOT NULL
+            {run_filter}
+        """), run_params)
         transfer_in_deposit_ids = {row[0] for row in r.fetchall()}
 
         # Get income-tagged deposit IDs
@@ -60,10 +68,11 @@ class FlowClassifier:
         income_deposit_ids = {row[0] for row in r.fetchall()}
 
         # Get transfer-matched withdrawal IDs
-        r = await session.execute(text("""
-            SELECT DISTINCT source_withdrawal_id FROM tax.normalized_events
-            WHERE event_type = 'TRANSFER_OUT' AND source_withdrawal_id IS NOT NULL
-        """))
+        r = await session.execute(text(f"""
+            SELECT DISTINCT ne.source_withdrawal_id FROM tax.normalized_events ne
+            WHERE ne.event_type = 'TRANSFER_OUT' AND ne.source_withdrawal_id IS NOT NULL
+            {run_filter}
+        """), run_params)
         transfer_out_withdrawal_ids = {row[0] for row in r.fetchall()}
 
         # Classify deposits
@@ -81,8 +90,8 @@ class FlowClassifier:
                 flow_class = "INCOME_RECEIPT"
                 rule = "Classified as income in income_events_v4"
             else:
-                flow_class = "EXTERNAL_DEPOSIT"
-                rule = "No transfer match or income classification found"
+                flow_class = "UNCLASSIFIED"
+                rule = "No transfer match or income classification found — requires manual review"
 
             qty = D(str(amount or "0"))
             unit_price = D(str(price_usd or "0"))
@@ -115,8 +124,8 @@ class FlowClassifier:
                 flow_class = "INTERNAL_TRANSFER_OUT"
                 rule = "Matched as TRANSFER_OUT in normalized events"
             else:
-                flow_class = "EXTERNAL_WITHDRAWAL"
-                rule = "No transfer match found"
+                flow_class = "UNCLASSIFIED"
+                rule = "No transfer match found — requires manual review"
 
             qty = D(str(amount or "0"))
             unit_price = D(str(price_usd or "0"))

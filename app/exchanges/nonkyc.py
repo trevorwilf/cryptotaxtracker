@@ -170,6 +170,7 @@ class NonKYCExchange(BaseExchange):
                 "amount": str(w.get("quantity", w.get("amount", "0"))),  # quantity FIRST (official API field)
                 "fee": str(w.get("fee", "0")),
                 "fee_currency": w.get("feecurrency", w.get("fee_asset", "")),
+                "fee_asset": w.get("feecurrency", w.get("fee_asset", "")),
                 "network": w.get("network", ""),
                 "tx_hash": w.get("transactionid", w.get("txHash", w.get("txid", ""))),  # transactionid FIRST
                 "address": w.get("address", ""),

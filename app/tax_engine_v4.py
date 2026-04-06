@@ -71,6 +71,7 @@ class DisposalV4:
     source_trade_id: int | None = None
     market: str = ""
     exchange: str = ""
+    disposal_db_id: int | None = None
 
 
 class TaxEngineV4:
@@ -103,12 +104,14 @@ class TaxEngineV4:
                  "long_term_losses": ZERO}
 
         # Clear previous v4 computation for this run
+        # IMPORTANT: preserve transfer_in lots created by transfer matcher
         await session.execute(text(
             "DELETE FROM tax.form_8949_v4 WHERE run_id = :r"), {"r": run_id})
         await session.execute(text(
             "DELETE FROM tax.disposals_v4 WHERE run_id = :r"), {"r": run_id})
         await session.execute(text(
-            "DELETE FROM tax.lots_v4 WHERE run_id = :r"), {"r": run_id})
+            "DELETE FROM tax.lots_v4 WHERE run_id = :r AND source_type NOT IN ('transfer_in')"),
+            {"r": run_id})
 
         # 1. Create lots from ACQUISITION events
         acq_count = await self._create_acquisition_lots(session, run_id)
@@ -385,7 +388,7 @@ class TaxEngineV4:
                        "id": lot["id"]})
 
                 # Insert disposal record
-                await session.execute(text("""
+                disp_result = await session.execute(text("""
                     INSERT INTO tax.disposals_v4
                         (asset, wallet, quantity, proceeds_usd, net_proceeds_usd,
                          cost_basis_usd, gain_loss_usd,
@@ -398,6 +401,7 @@ class TaxEngineV4:
                          :oaa, :da, :hd, :term,
                          :deid, :lid, :stid,
                          :market, :exchange, :rid)
+                    RETURNING id
                 """), {
                     "asset": asset, "wallet": wallet,
                     "qty": str(consume),
@@ -412,6 +416,8 @@ class TaxEngineV4:
                     "market": ev.get("raw_market", ""),
                     "exchange": wallet, "rid": run_id,
                 })
+                disp_row = disp_result.fetchone()
+                disp.disposal_db_id = disp_row[0] if disp_row else None
 
                 remaining_to_sell -= consume
                 portion_used += consume
@@ -525,6 +531,6 @@ class TaxEngineV4:
             "asset": disp.asset, "wallet": disp.wallet,
             "exchange": disp.exchange,
             "hd": disp.holding_days, "ty": tax_year,
-            "did": None,  # disposal_id from disposals_v4 (could link)
+            "did": disp.disposal_db_id,
             "rid": run_id,
         })

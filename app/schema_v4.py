@@ -504,4 +504,91 @@ CREATE TABLE IF NOT EXISTS tax.classified_flows (
 );
 CREATE INDEX IF NOT EXISTS idx_cf_exchange ON tax.classified_flows(exchange, flow_class);
 CREATE INDEX IF NOT EXISTS idx_cf_class ON tax.classified_flows(flow_class);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- EXCHANGE INTERNAL TRANSFERS (e.g. MEXC universal transfers spot→futures)
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS tax.exchange_transfers (
+    id              SERIAL PRIMARY KEY,
+    exchange        VARCHAR(50)   NOT NULL,
+    exchange_id     VARCHAR(200)  NOT NULL,
+    asset           VARCHAR(50)   NOT NULL,
+    amount          NUMERIC(36,18) NOT NULL,
+    from_account    VARCHAR(100),
+    to_account      VARCHAR(100),
+    status          VARCHAR(30),
+    asset_price_usd NUMERIC(36,18),
+    amount_usd      NUMERIC(36,18),
+    transferred_at  TIMESTAMPTZ,
+    raw_data        JSONB,
+    source_type     VARCHAR(30) DEFAULT 'api',
+    source_file     VARCHAR(500),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(exchange, exchange_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ext_exchange ON tax.exchange_transfers(exchange, transferred_at);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WALLET OWNERSHIP / ADDRESS CLAIMS
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS tax.wallet_entities (
+    id              SERIAL PRIMARY KEY,
+    entity_type     VARCHAR(30) NOT NULL,
+    label           VARCHAR(200) NOT NULL,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tax.wallet_accounts (
+    id              SERIAL PRIMARY KEY,
+    entity_id       INTEGER NOT NULL REFERENCES tax.wallet_entities(id),
+    account_type    VARCHAR(30) NOT NULL,
+    exchange_name   VARCHAR(50),
+    label           VARCHAR(200) NOT NULL,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tax.wallet_addresses (
+    id              SERIAL PRIMARY KEY,
+    account_id      INTEGER NOT NULL REFERENCES tax.wallet_accounts(id),
+    address         VARCHAR(500) NOT NULL,
+    chain           VARCHAR(50),
+    network         VARCHAR(100),
+    token_contract  VARCHAR(200),
+    label           VARCHAR(200),
+    first_seen_at   TIMESTAMPTZ,
+    last_seen_at    TIMESTAMPTZ,
+    is_active       BOOLEAN DEFAULT TRUE,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(address, chain)
+);
+CREATE INDEX IF NOT EXISTS idx_wa_address ON tax.wallet_addresses(address);
+CREATE INDEX IF NOT EXISTS idx_wa_account ON tax.wallet_addresses(account_id);
+
+CREATE TABLE IF NOT EXISTS tax.wallet_address_claims (
+    id              SERIAL PRIMARY KEY,
+    address_id      INTEGER NOT NULL REFERENCES tax.wallet_addresses(id),
+    claim_type      VARCHAR(30) NOT NULL,
+    confidence      VARCHAR(20) NOT NULL,
+    effective_from  TIMESTAMPTZ,
+    effective_to    TIMESTAMPTZ,
+    evidence_summary TEXT,
+    claimed_by      VARCHAR(100) DEFAULT 'user',
+    claimed_at      TIMESTAMPTZ DEFAULT NOW(),
+    reviewed_by     VARCHAR(100),
+    reviewed_at     TIMESTAMPTZ,
+    review_status   VARCHAR(20) DEFAULT 'pending',
+    notes           TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tax.wallet_claim_evidence (
+    id              SERIAL PRIMARY KEY,
+    claim_id        INTEGER NOT NULL REFERENCES tax.wallet_address_claims(id),
+    evidence_type   VARCHAR(50) NOT NULL,
+    evidence_data   JSONB,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
 """

@@ -146,6 +146,22 @@ async def run_sync(exchange_name: str, full: bool = False):
                 counts["withdrawals"] = len(withdrawals)
                 logger.info(f"  [{exchange_name}] Stored {len(withdrawals)} withdrawals with USD")
 
+            # ── Exchange internal transfers ────────────────────────────
+            if hasattr(ex, 'fetch_transfers'):
+                logger.info(f"  [{exchange_name}] Pulling internal transfers...")
+                transfers = await ex.fetch_transfers(since=last_ts.get("transfers"))
+                if transfers:
+                    for t in transfers:
+                        ts = t.get("transferred_at") or datetime.now(timezone.utc)
+                        usd = await oracle.resolve_transfer_usd(
+                            session, t["asset"], t["amount"], None, ts,
+                        )
+                        t["asset_price_usd"] = usd["asset_price_usd"]
+                        t["amount_usd"] = usd["amount_usd"]
+                    await db.upsert_exchange_transfers(session, exchange_name, transfers)
+                    counts["exchange_transfers"] = len(transfers)
+                    logger.info(f"  [{exchange_name}] Stored {len(transfers)} internal transfers")
+
             # ── Pool activity ─────────────────────────────────────────
             logger.info(f"  [{exchange_name}] Pulling pool activity...")
             pools = await ex.fetch_pool_activity(since=last_ts.get("pools"))
@@ -613,20 +629,14 @@ async def get_lots(asset: str = Query(None), show_depleted: bool = Query(False))
 
 
 @app.get("/export/tax-report")
-async def export_tax_report(year: int = Query(..., description="Tax year (required)")):
-    """Generate the full accountant-ready tax report XLSX."""
-    try:
-        async with db.get_session() as session:
-            from exports.tax_report import generate_full_tax_report
-            filepath = await generate_full_tax_report(session, year=year)
-        return FileResponse(
-            filepath,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=os.path.basename(filepath),
-        )
-    except Exception as e:
-        logger.exception(f"Tax report export failed: {e}")
-        raise HTTPException(500, f"Export failed: {str(e)}")
+async def export_tax_report_v3_deprecated(year: int = Query(..., description="Tax year (required)")):
+    """DEPRECATED: v3 tax report is not filing-safe."""
+    raise HTTPException(
+        410,
+        detail="DEPRECATED: The v3 tax report is not filing-safe. "
+               "Use GET /export/v4-tax-report for accountant-grade output. "
+               "See /v4/compute-all to run the v4 pipeline first."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -690,6 +700,11 @@ async def v4_compute_all(year: int = Query(2025)):
         results = {}
         exc = ExceptionManager()
 
+        # Step 0: Clear stale exceptions from any prior run with same run_id
+        async with db.get_session() as session:
+            await ExceptionManager.clear_for_run(session, run_id)
+            await session.commit()
+
         # Step 1: Normalize
         async with db.get_session() as session:
             ledger = NormalizedLedger(exc)
@@ -731,7 +746,21 @@ async def v4_compute_all(year: int = Query(2025)):
             results["compute"] = await engine.process_disposals_and_report(session, run_id, year=year)
             await session.commit()
 
-        # Step 6: Check data coverage gaps (stop-ship)
+        # Step 6: Classify funding flows
+        async with db.get_session() as session:
+            from flow_classifier import FlowClassifier
+            fc = FlowClassifier()
+            results["funding_flows"] = await fc.classify_all(session, run_id)
+            await session.commit()
+
+        # Step 7: Compute data coverage
+        async with db.get_session() as session:
+            from data_coverage import DataCoverageTracker
+            tracker = DataCoverageTracker()
+            results["data_coverage"] = await tracker.compute_coverage(session, run_id, year)
+            await session.commit()
+
+        # Step 8: Check data coverage gaps (stop-ship)
         blockers = []
         warnings_list = []
         try:
@@ -764,7 +793,7 @@ async def v4_compute_all(year: int = Query(2025)):
         # Flush exceptions
         async with db.get_session() as session:
             exc_count = await exc.flush(session)
-            filing_status = await ExceptionManager.check_filing_ready(session, year)
+            filing_status = await ExceptionManager.check_filing_ready(session, year, run_id=run_id)
             await session.commit()
 
         # Override filing_ready if blockers found
@@ -858,7 +887,7 @@ async def v4_classify_income(run_id: int = Query(None)):
 
 @app.post("/v4/compute")
 async def v4_compute(year: int = Query(2025), run_id: int = Query(None)):
-    """Step 4: FIFO computation."""
+    """Step 4: FIFO computation. DEPRECATED — use /v4/compute-all for filing-grade output."""
     if not run_id:
         raise HTTPException(400, "run_id is required")
     try:
@@ -869,6 +898,10 @@ async def v4_compute(year: int = Query(2025), run_id: int = Query(None)):
             result = await engine.compute(session, run_id, year=year)
             await exc.flush(session)
             await session.commit()
+        result["_deprecation_warning"] = (
+            "DEPRECATED: /v4/compute is not filing-safe. "
+            "Use /v4/compute-all for deterministic, run-scoped computation."
+        )
         return result
     except Exception as e:
         logger.exception(f"v4 compute failed: {e}")
@@ -1123,11 +1156,14 @@ async def v4_data_coverage(year: int = Query(None)):
     return coverage
 
 
+@app.post("/v4/import-file")
 @app.post("/v4/import-csv")
-async def import_csv(exchange: str = Query(...), data_type: str = Query("trades"),
-                     filepath: str = Query(...)):
-    """Import a CSV file to supplement API data.
+async def import_file(filepath: str = Query(...),
+                      exchange: str = Query(None), data_type: str = Query(None)):
+    """Import a CSV/XLSX file to supplement API data.
 
+    Auto-detects format by extension + header fingerprinting.
+    Optional exchange/data_type overrides skip auto-detection.
     Accepts a server-side filepath (upload the file to the server first).
     """
     from csv_importer import CSVImporter
@@ -1137,14 +1173,8 @@ async def import_csv(exchange: str = Query(...), data_type: str = Query("trades"
 
     importer = CSVImporter()
     async with db.get_session() as session:
-        if exchange.lower() == "mexc" and data_type == "trades":
-            result = await importer.import_mexc_trades(session, filepath)
-        elif exchange.lower() == "mexc" and data_type == "deposits":
-            result = await importer.import_mexc_deposits(session, filepath)
-        elif exchange.lower() == "mexc" and data_type == "withdrawals":
-            result = await importer.import_mexc_withdrawals(session, filepath)
-        else:
-            result = await importer.import_generic(session, filepath, exchange, data_type, {})
+        result = await importer.import_file(session, filepath,
+                                            exchange=exchange, data_type=data_type)
         await session.commit()
     return result
 
@@ -1229,6 +1259,210 @@ async def v4_pnl_by_exchange(year: int = Query(...)):
         """), {"year": year})
         rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
     return rows
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# WALLET OWNERSHIP / ADDRESS CLAIMS
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.post("/v4/wallet/entities")
+async def wallet_create_entity(entity_type: str = Query(...), label: str = Query(...),
+                                notes: str = Query(None)):
+    """Create a wallet entity (taxpayer, spouse, business, third_party)."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            INSERT INTO tax.wallet_entities (entity_type, label, notes)
+            VALUES (:et, :label, :notes) RETURNING id
+        """), {"et": entity_type, "label": label, "notes": notes})
+        await session.commit()
+        return {"id": r.fetchone()[0], "entity_type": entity_type, "label": label}
+
+
+@app.get("/v4/wallet/entities")
+async def wallet_list_entities():
+    """List all wallet entities with accounts and addresses."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT e.id, e.entity_type, e.label, e.notes,
+                   a.id AS account_id, a.account_type, a.exchange_name, a.label AS account_label,
+                   wa.id AS address_id, wa.address, wa.chain, wa.label AS address_label
+            FROM tax.wallet_entities e
+            LEFT JOIN tax.wallet_accounts a ON a.entity_id = e.id
+            LEFT JOIN tax.wallet_addresses wa ON wa.account_id = a.id
+            ORDER BY e.id, a.id, wa.id
+        """))
+        rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+
+    # Group into nested structure
+    entities = {}
+    for row in rows:
+        eid = row["id"]
+        if eid not in entities:
+            entities[eid] = {
+                "id": eid, "entity_type": row["entity_type"],
+                "label": row["label"], "notes": row["notes"], "accounts": {}
+            }
+        if row["account_id"]:
+            aid = row["account_id"]
+            if aid not in entities[eid]["accounts"]:
+                entities[eid]["accounts"][aid] = {
+                    "id": aid, "account_type": row["account_type"],
+                    "exchange_name": row["exchange_name"],
+                    "label": row["account_label"], "addresses": []
+                }
+            if row["address_id"]:
+                entities[eid]["accounts"][aid]["addresses"].append({
+                    "id": row["address_id"], "address": row["address"],
+                    "chain": row["chain"], "label": row["address_label"],
+                })
+
+    result = []
+    for e in entities.values():
+        e["accounts"] = list(e["accounts"].values())
+        result.append(e)
+    return result
+
+
+@app.post("/v4/wallet/accounts")
+async def wallet_create_account(entity_id: int = Query(...), account_type: str = Query(...),
+                                 exchange_name: str = Query(None), label: str = Query(...)):
+    """Create a wallet account under an entity."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            INSERT INTO tax.wallet_accounts (entity_id, account_type, exchange_name, label)
+            VALUES (:eid, :at, :en, :label) RETURNING id
+        """), {"eid": entity_id, "at": account_type, "en": exchange_name, "label": label})
+        await session.commit()
+        return {"id": r.fetchone()[0], "entity_id": entity_id, "label": label}
+
+
+@app.post("/v4/wallet/addresses")
+async def wallet_register_address(account_id: int = Query(...), address: str = Query(...),
+                                   chain: str = Query(None), network: str = Query(None),
+                                   label: str = Query(None)):
+    """Register an address under a wallet account."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            INSERT INTO tax.wallet_addresses (account_id, address, chain, network, label)
+            VALUES (:aid, :addr, :chain, :net, :label)
+            ON CONFLICT (address, chain) DO UPDATE SET
+                label = COALESCE(EXCLUDED.label, tax.wallet_addresses.label),
+                last_seen_at = NOW()
+            RETURNING id
+        """), {"aid": account_id, "addr": address, "chain": chain, "net": network, "label": label})
+        await session.commit()
+        return {"id": r.fetchone()[0], "address": address, "chain": chain}
+
+
+@app.post("/v4/wallet/claims")
+async def wallet_create_claim(address_id: int = Query(...), claim_type: str = Query(...),
+                               confidence: str = Query("verified"),
+                               evidence_summary: str = Query(None)):
+    """Claim ownership of an address."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            INSERT INTO tax.wallet_address_claims
+                (address_id, claim_type, confidence, evidence_summary)
+            VALUES (:aid, :ct, :conf, :es) RETURNING id
+        """), {"aid": address_id, "ct": claim_type, "conf": confidence, "es": evidence_summary})
+        await session.commit()
+        return {"id": r.fetchone()[0], "claim_type": claim_type, "confidence": confidence}
+
+
+@app.get("/v4/wallet/addresses/check/{address}")
+async def wallet_check_address(address: str):
+    """Check if an address is claimed as self-owned."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT wa.id, wa.address, wa.chain, wa.label,
+                   wac.claim_type, wac.confidence, wac.review_status,
+                   wacct.exchange_name, wacct.label AS account_label,
+                   we.entity_type, we.label AS entity_label
+            FROM tax.wallet_addresses wa
+            JOIN tax.wallet_address_claims wac ON wac.address_id = wa.id
+            JOIN tax.wallet_accounts wacct ON wacct.id = wa.account_id
+            JOIN tax.wallet_entities we ON we.id = wacct.entity_id
+            WHERE wa.address = :addr
+            ORDER BY wac.claimed_at DESC
+            LIMIT 1
+        """), {"addr": address})
+        row = r.fetchone()
+
+    if not row:
+        return {"address": address, "is_claimed": False}
+
+    return {
+        "address": address, "is_claimed": True,
+        "address_id": row[0], "chain": row[2], "label": row[3],
+        "claim_type": row[4], "confidence": row[5], "review_status": row[6],
+        "exchange_name": row[7], "account_label": row[8],
+        "entity_type": row[9], "entity_label": row[10],
+    }
+
+
+@app.post("/v4/wallet/auto-discover")
+async def wallet_auto_discover():
+    """Scan deposits/withdrawals and suggest address claims."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        # Find addresses that appear in both deposits and withdrawals (different exchanges)
+        r = await session.execute(t("""
+            WITH dep_addrs AS (
+                SELECT DISTINCT exchange, address, asset
+                FROM tax.deposits WHERE address IS NOT NULL AND address != ''
+            ), wd_addrs AS (
+                SELECT DISTINCT exchange, address, asset
+                FROM tax.withdrawals WHERE address IS NOT NULL AND address != ''
+            )
+            SELECT d.address, d.exchange AS deposit_exchange, d.asset,
+                   w.exchange AS withdrawal_exchange
+            FROM dep_addrs d
+            JOIN wd_addrs w ON d.address = w.address
+            WHERE d.exchange != w.exchange
+        """))
+        cross_exchange = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+
+        # Find all unique addresses
+        r = await session.execute(t("""
+            SELECT address, 'deposit' AS direction, exchange, COUNT(*) AS cnt
+            FROM tax.deposits WHERE address IS NOT NULL AND address != ''
+            GROUP BY address, exchange
+            UNION ALL
+            SELECT address, 'withdrawal' AS direction, exchange, COUNT(*) AS cnt
+            FROM tax.withdrawals WHERE address IS NOT NULL AND address != ''
+            GROUP BY address, exchange
+        """))
+        all_addresses = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+
+        # Check which are already claimed
+        r = await session.execute(t("""
+            SELECT wa.address FROM tax.wallet_addresses wa
+            JOIN tax.wallet_address_claims wac ON wac.address_id = wa.id
+        """))
+        claimed = {row[0] for row in r.fetchall()}
+
+    suggestions = []
+    for match in cross_exchange:
+        if match["address"] not in claimed:
+            suggestions.append({
+                "address": match["address"],
+                "reason": f"Appears in deposits on {match['deposit_exchange']} and withdrawals on {match['withdrawal_exchange']}",
+                "suggested_claim": "self_owned",
+                "confidence": "high",
+                "asset": match["asset"],
+            })
+
+    return {
+        "total_unique_addresses": len(set(a["address"] for a in all_addresses)),
+        "already_claimed": len(claimed),
+        "suggestions": suggestions,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -744,16 +744,16 @@ async def _build_exceptions_tab(wb, session, run_id):
     ws.cell(row=1, column=1, value="Open Exceptions").font = TITLE_FONT
 
     r = 4
-    _hdr(ws, r, ["Severity", "Code", "Message", "Status", "Tax Year", "Created"])
+    _hdr(ws, r, ["Severity", "Category", "Message", "Resolution Status", "Tax Year", "Created"])
     r += 1
 
     run_filter = "AND run_id = :rid" if run_id else ""
     params = {"rid": run_id} if run_id else {}
 
     res = await session.execute(text(f"""
-        SELECT severity, exception_code, message, status, tax_year, created_at
+        SELECT severity, category, message, resolution_status, affected_tax_year, created_at
         FROM tax.exceptions
-        WHERE status = 'open' {run_filter}
+        WHERE resolution_status = 'open' {run_filter}
         ORDER BY severity DESC, created_at ASC
     """), params)
 

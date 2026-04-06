@@ -47,3 +47,26 @@ Use `GET /v4/data-coverage?year=2025` to see:
 - Whether gaps exist
 - Whether CSV imports have filled those gaps
 - The "Data Coverage" tab in the XLSX export shows this information
+
+## How Coverage Is Tracked
+
+The `tax.data_coverage` table is populated by `DataCoverageTracker` during each
+`/v4/compute-all` run. It scans the raw tables (`tax.trades`, `tax.deposits`,
+`tax.withdrawals`) and computes:
+
+1. **API-sourced ranges**: MIN/MAX timestamps where `source_type IS NULL OR source_type = 'api'`
+2. **CSV-sourced ranges**: MIN/MAX timestamps where `source_type IN ('csv', 'xlsx')`
+3. **Gap detection**: If the earliest record is after the tax year start (Jan 1)
+4. **CSV coverage check**: Whether CSV/XLSX imports fill the gap
+
+Each record gets `source_type` set to `'api'`, `'csv'`, or `'xlsx'` based on how it
+was ingested. This enables the system to distinguish API-fetched data from imported data.
+
+## Import Pipeline
+
+The format-aware import subsystem (`/v4/import-file`) supports:
+- MEXC deposit/withdrawal `.xlsx` exports (official format)
+- NonKYC deposit/withdrawal `.csv` exports (official format)
+- MEXC trade `.csv` (API format)
+
+See `docs/EXCHANGE_EXPORT_FORMATS.md` for exact header fingerprints.

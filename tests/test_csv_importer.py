@@ -43,6 +43,10 @@ class FakeSession:
                 return FakeMockResult(row=(1,))
             return FakeMockResult(row=None)
 
+        # Handle RETURNING id (new import subsystem uses this)
+        if "RETURNING id" in sql:
+            return FakeMockResult(row=(1,))
+
         return FakeMockResult(row=None)
 
 
