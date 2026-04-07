@@ -1964,8 +1964,10 @@ async def wallet_list_entities():
         from sqlalchemy import text as t
         r = await session.execute(t("""
             SELECT e.id, e.entity_type, e.label, e.notes,
-                   a.id AS account_id, a.account_type, a.exchange_name, a.label AS account_label,
-                   wa.id AS address_id, wa.address, wa.chain, wa.label AS address_label
+                   a.id AS account_id, a.account_type, a.exchange_name,
+                   a.label AS account_label, a.notes AS account_notes,
+                   wa.id AS address_id, wa.address, wa.chain,
+                   wa.label AS address_label, wa.is_active
             FROM tax.wallet_entities e
             LEFT JOIN tax.wallet_accounts a ON a.entity_id = e.id
             LEFT JOIN tax.wallet_addresses wa ON wa.account_id = a.id
@@ -1988,12 +1990,14 @@ async def wallet_list_entities():
                 entities[eid]["accounts"][aid] = {
                     "id": aid, "account_type": row["account_type"],
                     "exchange_name": row["exchange_name"],
-                    "label": row["account_label"], "addresses": []
+                    "label": row["account_label"],
+                    "notes": row.get("account_notes"), "addresses": []
                 }
             if row["address_id"]:
                 entities[eid]["accounts"][aid]["addresses"].append({
                     "id": row["address_id"], "address": row["address"],
                     "chain": row["chain"], "label": row["address_label"],
+                    "is_active": row.get("is_active", True),
                 })
 
     result = []
@@ -2154,60 +2158,126 @@ async def wallet_check_address(address: str):
 
 @app.post("/v4/wallet/auto-discover")
 async def wallet_auto_discover():
-    """Scan deposits/withdrawals and suggest address claims."""
+    """Scan all deposit/withdrawal addresses and show claim status."""
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        # Find addresses that appear in both deposits and withdrawals (different exchanges)
-        r = await session.execute(t("""
-            WITH dep_addrs AS (
-                SELECT DISTINCT exchange, address, asset
-                FROM tax.deposits WHERE address IS NOT NULL AND address != ''
-            ), wd_addrs AS (
-                SELECT DISTINCT exchange, address, asset
-                FROM tax.withdrawals WHERE address IS NOT NULL AND address != ''
-            )
-            SELECT d.address, d.exchange AS deposit_exchange, d.asset,
-                   w.exchange AS withdrawal_exchange
-            FROM dep_addrs d
-            JOIN wd_addrs w ON d.address = w.address
-            WHERE d.exchange != w.exchange
-        """))
-        cross_exchange = [dict(zip(r.keys(), row)) for row in r.fetchall()]
 
-        # Find all unique addresses
+        # 1. All unique addresses from deposits and withdrawals
         r = await session.execute(t("""
-            SELECT address, 'deposit' AS direction, exchange, COUNT(*) AS cnt
-            FROM tax.deposits WHERE address IS NOT NULL AND address != ''
-            GROUP BY address, exchange
+            SELECT address, exchange, asset, network, 'deposit' AS direction,
+                   COUNT(*) AS tx_count,
+                   MIN(confirmed_at)::text AS first_seen,
+                   MAX(confirmed_at)::text AS last_seen
+            FROM tax.deposits
+            WHERE address IS NOT NULL AND address != ''
+            GROUP BY address, exchange, asset, network
             UNION ALL
-            SELECT address, 'withdrawal' AS direction, exchange, COUNT(*) AS cnt
-            FROM tax.withdrawals WHERE address IS NOT NULL AND address != ''
-            GROUP BY address, exchange
+            SELECT address, exchange, asset, network, 'withdrawal' AS direction,
+                   COUNT(*) AS tx_count,
+                   MIN(confirmed_at)::text AS first_seen,
+                   MAX(confirmed_at)::text AS last_seen
+            FROM tax.withdrawals
+            WHERE address IS NOT NULL AND address != ''
+            GROUP BY address, exchange, asset, network
         """))
-        all_addresses = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+        all_rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
 
-        # Check which are already claimed
+        # 2. Claimed addresses with registration info
         r = await session.execute(t("""
-            SELECT wa.address FROM tax.wallet_addresses wa
+            SELECT wa.address, wac.claim_type, we.label AS entity_label,
+                   wacct.label AS account_label, wacct.id AS account_id
+            FROM tax.wallet_addresses wa
             JOIN tax.wallet_address_claims wac ON wac.address_id = wa.id
+            JOIN tax.wallet_accounts wacct ON wa.account_id = wacct.id
+            JOIN tax.wallet_entities we ON wacct.entity_id = we.id
         """))
-        claimed = {row[0] for row in r.fetchall()}
+        claimed_map = {}
+        for row in r.fetchall():
+            claimed_map[row[0]] = {
+                "entity_label": row[1] if len(row) < 4 else row[2],
+                "account_label": row[3] if len(row) >= 4 else "",
+                "account_id": row[4] if len(row) >= 5 else None,
+                "claim_type": row[1],
+            }
+        # Fix: use dict(zip()) for clarity
+        r2 = await session.execute(t("""
+            SELECT wa.address, wac.claim_type, we.label AS entity_label,
+                   wacct.label AS account_label, wacct.id AS account_id
+            FROM tax.wallet_addresses wa
+            JOIN tax.wallet_address_claims wac ON wac.address_id = wa.id
+            JOIN tax.wallet_accounts wacct ON wa.account_id = wacct.id
+            JOIN tax.wallet_entities we ON wacct.entity_id = we.id
+        """))
+        claimed_map = {}
+        for row in r2.fetchall():
+            rd = dict(zip(r2.keys(), row))
+            claimed_map[rd["address"]] = {
+                "entity_label": rd["entity_label"],
+                "account_label": rd["account_label"],
+                "account_id": rd["account_id"],
+                "claim_type": rd["claim_type"],
+            }
 
-    suggestions = []
-    for match in cross_exchange:
-        if match["address"] not in claimed:
-            suggestions.append({
-                "address": match["address"],
-                "reason": f"Appears in deposits on {match['deposit_exchange']} and withdrawals on {match['withdrawal_exchange']}",
-                "suggested_claim": "self_owned",
-                "confidence": "high",
-                "asset": match["asset"],
-            })
+        # 3. Entity list for the "Add to Wallet" dropdowns
+        ent_r = await session.execute(t("""
+            SELECT e.id, e.label, a.id AS account_id, a.label AS account_label,
+                   a.account_type
+            FROM tax.wallet_entities e
+            LEFT JOIN tax.wallet_accounts a ON a.entity_id = e.id
+            ORDER BY e.id, a.id
+        """))
+        ent_rows = [dict(zip(ent_r.keys(), row)) for row in ent_r.fetchall()]
 
+    # Group addresses
+    addr_groups: dict[str, dict] = {}
+    for row in all_rows:
+        addr = row["address"]
+        if addr not in addr_groups:
+            addr_groups[addr] = {"address": addr, "exchanges": [], "assets": set(),
+                                 "networks": set(), "total_tx_count": 0,
+                                 "first_seen": row["first_seen"], "last_seen": row["last_seen"]}
+        g = addr_groups[addr]
+        g["exchanges"].append({"exchange": row["exchange"], "direction": row["direction"],
+                                "tx_count": row["tx_count"]})
+        g["assets"].add(row["asset"] or "")
+        if row["network"]:
+            g["networks"].add(row["network"])
+        g["total_tx_count"] += row["tx_count"]
+        if row["first_seen"] and (not g["first_seen"] or row["first_seen"] < g["first_seen"]):
+            g["first_seen"] = row["first_seen"]
+        if row["last_seen"] and (not g["last_seen"] or row["last_seen"] > g["last_seen"]):
+            g["last_seen"] = row["last_seen"]
+
+    addresses = []
+    for addr, g in addr_groups.items():
+        g["assets"] = sorted(g["assets"] - {""})
+        g["networks"] = sorted(g["networks"])
+        g["status"] = "claimed" if addr in claimed_map else "unclaimed"
+        g["registered_in"] = claimed_map.get(addr)
+        addresses.append(g)
+
+    addresses.sort(key=lambda a: (0 if a["status"] == "unclaimed" else 1, -a["total_tx_count"]))
+
+    # Build entity list
+    ent_map: dict[int, dict] = {}
+    for row in ent_rows:
+        eid = row["id"]
+        if eid not in ent_map:
+            ent_map[eid] = {"id": eid, "label": row["label"], "accounts": []}
+        if row["account_id"]:
+            ent_map[eid]["accounts"].append({
+                "id": row["account_id"], "label": row["account_label"],
+                "account_type": row["account_type"]})
+
+    claimed_count = sum(1 for a in addresses if a["status"] == "claimed")
     return {
-        "total_unique_addresses": len(set(a["address"] for a in all_addresses)),
-        "already_claimed": len(claimed),
-        "suggestions": suggestions,
+        "summary": {
+            "total_unique_addresses": len(addresses),
+            "already_registered": claimed_count,
+            "unclaimed": len(addresses) - claimed_count,
+        },
+        "addresses": addresses,
+        "entities": list(ent_map.values()),
     }
 
 

@@ -494,7 +494,12 @@
   </div>
   <div id="walletEntities"></div>
   <div id="walletAutoDiscover" style="display:none" class="card">
-    <div class="card-title">🔍 Auto-Discovered Addresses</div>
+    <div class="card-title">🔍 Address Discovery <span id="discoverSummary" class="badge badge-blue" style="margin-left:6px"></span></div>
+    <div class="btn-row" style="margin-bottom:1rem">
+      <button class="btn btn-secondary discoverFilter active" onclick="filterDiscovered('unclaimed',this)">Unclaimed</button>
+      <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('claimed',this)">Already Claimed</button>
+      <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('all',this)">All</button>
+    </div>
     <div id="walletDiscoverResults"></div>
   </div>
 </div>
@@ -1472,9 +1477,12 @@ async function editAccount(id){
   let acct=null;all.forEach(e=>(e.accounts||[]).forEach(a=>{if(a.id===id)acct=a;}));
   if(!acct)return;
   const card=document.getElementById(`account-${id}`);if(!card)return;
-  card.innerHTML=`<div class="wallet-form"><label>Account Type</label><select id="editAcctType"><option value="exchange" ${acct.account_type==='exchange'?'selected':''}>Exchange</option><option value="hardware_wallet" ${acct.account_type==='hardware_wallet'?'selected':''}>Hardware Wallet</option><option value="software_wallet" ${acct.account_type==='software_wallet'?'selected':''}>Software Wallet</option><option value="custodial" ${acct.account_type==='custodial'?'selected':''}>Custodial</option><option value="other" ${acct.account_type==='other'?'selected':''}>Other</option></select>
-    <label>Exchange Name</label><input id="editAcctExName" value="${acct.exchange_name||''}">
+  const isEx=acct.account_type==='exchange';
+  card.innerHTML=`<div class="wallet-form">
+    <label>Account Type</label><select id="editAcctType" onchange="document.getElementById('editAcctExDiv').style.display=this.value==='exchange'?'':'none'"><option value="exchange" ${acct.account_type==='exchange'?'selected':''}>Exchange</option><option value="hardware_wallet" ${acct.account_type==='hardware_wallet'?'selected':''}>Hardware Wallet</option><option value="software_wallet" ${acct.account_type==='software_wallet'?'selected':''}>Software Wallet</option><option value="custodial" ${acct.account_type==='custodial'?'selected':''}>Custodial</option><option value="other" ${acct.account_type==='other'?'selected':''}>Other</option></select>
+    <div id="editAcctExDiv" style="display:${isEx?'':'none'}"><label>Exchange Name</label><input id="editAcctExName" value="${acct.exchange_name||''}"></div>
     <label>Label</label><input id="editAcctLabel" value="${acct.label||''}">
+    <label>Notes</label><textarea id="editAcctNotes">${acct.notes||''}</textarea>
     <div class="form-actions"><button class="btn btn-primary" onclick="saveEditAccount(${id})">Save</button><button class="btn btn-secondary" onclick="loadWallets()">Cancel</button></div></div>`;
 }
 
@@ -1482,7 +1490,8 @@ async function saveEditAccount(id){
   const type=document.getElementById('editAcctType').value;
   const exName=document.getElementById('editAcctExName').value.trim();
   const label=document.getElementById('editAcctLabel').value.trim();
-  let url=`/v4/wallet/accounts/${id}?account_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}&exchange_name=${encodeURIComponent(exName)}`;
+  const notes=(document.getElementById('editAcctNotes')||{}).value||'';
+  let url=`/v4/wallet/accounts/${id}?account_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}&exchange_name=${encodeURIComponent(exName)}&notes=${encodeURIComponent(notes.trim())}`;
   await fetch(url,{method:'PATCH'});loadWallets();
 }
 
@@ -1513,29 +1522,141 @@ async function saveNewAddress(accountId){
 }
 
 async function editAddress(id){
-  // Simple prompt-based for now since address card is small
-  const chain=prompt('Chain:','');
-  const label=prompt('Label:','');
-  let url=`/v4/wallet/addresses/${id}?`;
-  if(chain!==null)url+=`chain=${encodeURIComponent(chain)}&`;
-  if(label!==null)url+=`label=${encodeURIComponent(label)}`;
-  await fetch(url,{method:'PATCH'});loadWallets();
+  const resp=await fetch('/v4/wallet/entities');const all=await resp.json();
+  let addr=null;all.forEach(e=>(e.accounts||[]).forEach(a=>(a.addresses||[]).forEach(w=>{if(w.id===id)addr=w;})));
+  if(!addr)return;
+  // Find the parent wallet-address div and add form after it
+  const addrEls=document.querySelectorAll('.wallet-address');
+  for(const el of addrEls){
+    if(el.querySelector(`[onclick*="editAddress(${id})"]`)){
+      const form=document.createElement('div');form.className='wallet-form';form.id=`edit-addr-${id}`;
+      form.innerHTML=`<div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);margin-bottom:8px">${addr.address}</div>
+        <label>Chain</label><input id="editAddrChain" value="${addr.chain||''}">
+        <label>Label</label><input id="editAddrLabel" value="${addr.label||''}">
+        <div class="form-actions"><button class="btn btn-primary" onclick="saveEditAddress(${id})">Save</button><button class="btn btn-secondary" onclick="document.getElementById('edit-addr-${id}').remove()">Cancel</button></div>`;
+      el.after(form);break;
+    }
+  }
+}
+
+async function saveEditAddress(id){
+  const chain=document.getElementById('editAddrChain').value.trim();
+  const label=document.getElementById('editAddrLabel').value.trim();
+  await fetch(`/v4/wallet/addresses/${id}?chain=${encodeURIComponent(chain)}&label=${encodeURIComponent(label)}`,{method:'PATCH'});
+  loadWallets();
 }
 
 function deleteAddress(id,addr){if(confirm(`Delete address "${addr}..."?`))fetch(`/v4/wallet/addresses/${id}`,{method:'DELETE'}).then(()=>loadWallets());}
 
+let discoveredData=null;
+let discoverFilter='unclaimed';
+
 async function autoDiscoverAddresses(){
   const el=document.getElementById('walletAutoDiscover');
   const results=document.getElementById('walletDiscoverResults');
-  el.style.display='block';results.innerHTML='<div style="color:var(--text-dim)">Scanning...</div>';
+  el.style.display='block';results.innerHTML='<div style="color:var(--text-dim)">Scanning transaction history...</div>';
   try{
-    const resp=await fetch('/v4/wallet/auto-discover',{method:'POST'});const data=await resp.json();
-    if(!data.suggestions||!data.suggestions.length){results.innerHTML='<div style="color:var(--text-secondary)">No cross-exchange address overlaps found.</div>';return;}
-    results.innerHTML=`<div style="margin-bottom:8px;color:var(--text-secondary);font-size:12px">${data.suggestions.length} address(es) found on multiple exchanges:</div>`+
-      data.suggestions.map(s=>`<div style="background:var(--amber-bg);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin-bottom:6px">
-        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)">${s.address.substring(0,40)}...</div>
-        <div style="font-size:11px;color:var(--amber);margin-top:4px">${s.reason||s.suggestion}</div></div>`).join('');
+    const resp=await fetch('/v4/wallet/auto-discover',{method:'POST'});
+    discoveredData=await resp.json();
+    document.getElementById('discoverSummary').textContent=
+      `${discoveredData.summary.unclaimed} unclaimed / ${discoveredData.summary.total_unique_addresses} total`;
+    renderDiscoveredAddresses(discoverFilter);
   }catch(e){results.innerHTML=`<div style="color:var(--red)">Error: ${e}</div>`;}
+}
+
+function filterDiscovered(filter,btn){
+  discoverFilter=filter;
+  document.querySelectorAll('.discoverFilter').forEach(b=>b.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+  renderDiscoveredAddresses(filter);
+}
+
+function suggestChain(a){
+  const nets=(a.networks||[]).join(' ').toLowerCase();
+  const assets=(a.assets||[]).join(' ').toLowerCase();
+  if(nets.includes('bitcoin')||assets.includes('btc'))return 'bitcoin';
+  if(nets.includes('salvium')||assets.includes('sal'))return 'salvium';
+  if(nets.includes('solana')||nets.includes('sol')||assets.includes('sol'))return 'solana';
+  if(nets.includes('ethereum')||assets.includes('eth'))return 'ethereum';
+  return '';
+}
+
+function renderDiscoveredAddresses(filter){
+  if(!discoveredData)return;
+  const results=document.getElementById('walletDiscoverResults');
+  let addrs=discoveredData.addresses||[];
+  if(filter==='unclaimed')addrs=addrs.filter(a=>a.status==='unclaimed');
+  else if(filter==='claimed')addrs=addrs.filter(a=>a.status==='claimed');
+  if(!addrs.length){results.innerHTML='<div style="color:var(--text-secondary);padding:1rem">No addresses match this filter.</div>';return;}
+  results.innerHTML=addrs.map((a,i)=>{
+    const isClaimed=a.status==='claimed';
+    const shortAddr=a.address.length>40?a.address.substring(0,20)+'...'+a.address.slice(-12):a.address;
+    const exchanges=a.exchanges.map(x=>`<span style="font-size:10px">${x.direction==='deposit'?'📥':'📤'} ${x.direction} on <strong>${x.exchange}</strong> (${x.tx_count} txs)</span>`).join(' · ');
+    const assetBadges=(a.assets||[]).map(x=>`<span class="badge badge-blue" style="font-size:9px">${x}</span>`).join(' ');
+    if(isClaimed){
+      const reg=a.registered_in||{};
+      return`<div style="background:var(--green-bg);border:1px solid rgba(34,197,94,0.2);border-radius:8px;padding:10px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">✅ ${assetBadges} <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)" title="${a.address}">${shortAddr}</span></div>
+        <div style="font-size:10px;color:var(--text-secondary)">${exchanges}</div>
+        <div style="font-size:10px;color:var(--green);margin-top:4px">Claimed: ${reg.claim_type||'?'} → ${reg.entity_label||'?'} / ${reg.account_label||'?'}</div>
+      </div>`;
+    }
+    const chain=suggestChain(a);
+    const labelSuggest=a.exchanges.length?`${a.exchanges[0].exchange} ${(a.assets||[''])[0]} ${a.exchanges[0].direction}`:'';
+    return`<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:6px" id="disc-${i}">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">${assetBadges} <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)" title="${a.address}">${shortAddr}</span></div>
+      <div style="font-size:10px;color:var(--text-secondary)">${exchanges}</div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:2px">First: ${a.first_seen?a.first_seen.substring(0,10):'?'} · Last: ${a.last_seen?a.last_seen.substring(0,10):'?'} · ${a.total_tx_count} total txs</div>
+      <button class="btn btn-purple" style="font-size:10px;padding:3px 10px;margin-top:6px" onclick="toggleAddToWallet('${a.address.replace(/'/g,"\\'")}',${i},'${chain}','${labelSuggest.replace(/'/g,"\\'")}')">+ Add to Wallet</button>
+      <div id="disc-form-${i}"></div>
+    </div>`;
+  }).join('');
+}
+
+function toggleAddToWallet(address,idx,chain,labelSuggest){
+  const target=document.getElementById(`disc-form-${idx}`);
+  if(target.innerHTML){target.innerHTML='';return;}
+  const ents=discoveredData.entities||[];
+  const entOpts=ents.map(e=>`<option value="${e.id}">${e.label}</option>`).join('');
+  target.innerHTML=`<div class="wallet-form" style="margin-top:8px">
+    <label>Entity</label><select id="disc-ent-${idx}" onchange="updateDiscAccounts(${idx})">${entOpts}</select>
+    <label>Account</label><select id="disc-acct-${idx}"><option value="">-- select --</option></select>
+    <label>Chain</label><input id="disc-chain-${idx}" value="${chain}">
+    <label>Label</label><input id="disc-label-${idx}" value="${labelSuggest}">
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="disc-claim-${idx}" checked style="width:auto"> Claim as self-owned</label>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveDiscoveredAddress('${address.replace(/'/g,"\\'")}',${idx})">Save</button><button class="btn btn-secondary" onclick="document.getElementById('disc-form-${idx}').innerHTML=''">Cancel</button></div>
+  </div>`;
+  updateDiscAccounts(idx);
+}
+
+function updateDiscAccounts(idx){
+  const entId=parseInt(document.getElementById(`disc-ent-${idx}`).value);
+  const ent=(discoveredData.entities||[]).find(e=>e.id===entId);
+  const accts=ent?ent.accounts:[];
+  document.getElementById(`disc-acct-${idx}`).innerHTML=
+    accts.map(a=>`<option value="${a.id}">${a.label}</option>`).join('')+
+    '<option value="new">+ New Account</option>';
+}
+
+async function saveDiscoveredAddress(address,idx){
+  let accountId=document.getElementById(`disc-acct-${idx}`).value;
+  const chain=document.getElementById(`disc-chain-${idx}`).value.trim();
+  const label=document.getElementById(`disc-label-${idx}`).value.trim();
+  const claim=document.getElementById(`disc-claim-${idx}`).checked;
+  const entId=document.getElementById(`disc-ent-${idx}`).value;
+  if(accountId==='new'){
+    const acctLabel=prompt('New account label:','');
+    if(!acctLabel)return;
+    const r=await fetch(`/v4/wallet/accounts?entity_id=${entId}&account_type=software_wallet&label=${encodeURIComponent(acctLabel)}`,{method:'POST'});
+    const res=await r.json();accountId=res.id;
+  }
+  if(!accountId){alert('Select an account');return;}
+  let url=`/v4/wallet/addresses?account_id=${accountId}&address=${encodeURIComponent(address)}`;
+  if(chain)url+=`&chain=${encodeURIComponent(chain)}`;
+  if(label)url+=`&label=${encodeURIComponent(label)}`;
+  const r=await fetch(url,{method:'POST'});const res=await r.json();
+  if(claim&&res.id){await fetch(`/v4/wallet/claims?address_id=${res.id}&claim_type=self_owned&confidence=verified`,{method:'POST'});}
+  autoDiscoverAddresses();loadWallets();
 }
 
 // ── Table Export ─────────────────────────────────────────

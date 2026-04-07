@@ -337,3 +337,122 @@ class TestWalletUI:
         h = self._html()
         assert "newAcctType" in h
         assert "hardware_wallet" in h
+
+
+# ═══ Part 2 Tests ═════════════════════════════════════════════════════════
+
+class TestListEntitiesEnhanced:
+
+    def test_list_query_includes_account_notes(self):
+        """The list entities SQL should select a.notes AS account_notes."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_list_entities)
+        assert "account_notes" in src
+
+    def test_list_query_includes_is_active(self):
+        """The list entities SQL should select wa.is_active."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_list_entities)
+        assert "is_active" in src
+
+    def test_list_grouping_includes_notes(self):
+        """The grouping code should include notes in account objects."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_list_entities)
+        assert '"notes"' in src and "account_notes" in src
+
+
+class TestAutoDiscoverEnhanced:
+
+    def test_auto_discover_returns_new_structure(self):
+        """The response should have summary, addresses, entities keys."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert '"summary"' in src
+        assert '"addresses"' in src
+        assert '"entities"' in src
+
+    def test_auto_discover_includes_tx_count(self):
+        """Each address group should include total_tx_count."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert "total_tx_count" in src
+
+    def test_auto_discover_includes_status(self):
+        """Each address should have status: claimed or unclaimed."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert '"claimed"' in src
+        assert '"unclaimed"' in src
+
+    def test_auto_discover_queries_both_tables(self):
+        """The SQL should query both deposits and withdrawals."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert "tax.deposits" in src
+        assert "tax.withdrawals" in src
+
+
+class TestUIDiscoverFilter:
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_discover_filter_buttons_exist(self):
+        h = self._html()
+        assert "discoverFilter" in h
+        assert "filterDiscovered" in h
+
+    def test_render_discovered_function(self):
+        assert "function renderDiscoveredAddresses" in self._html()
+
+    def test_toggle_add_to_wallet_function(self):
+        assert "function toggleAddToWallet" in self._html()
+
+    def test_save_discovered_function(self):
+        assert "function saveDiscoveredAddress" in self._html()
+
+    def test_discover_summary_badge(self):
+        assert 'id="discoverSummary"' in self._html()
+
+
+class TestUIInlineEditNoPrompt:
+
+    def _html(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_edit_account_has_notes_field(self):
+        """editAccount form should include Notes textarea."""
+        h = self._html()
+        assert "editAcctNotes" in h
+
+    def test_edit_account_has_exchange_conditional(self):
+        """editAccount form should conditionally show exchange name."""
+        h = self._html()
+        assert "editAcctExDiv" in h
+
+    def test_edit_address_no_prompt(self):
+        """editAddress should NOT use prompt()."""
+        h = self._html()
+        # The old prompt-based editAddress code should be gone
+        assert "prompt('Chain:')" not in h
+
+    def test_edit_address_has_inline_form(self):
+        """editAddress should create an inline form."""
+        h = self._html()
+        assert "editAddrChain" in h
+        assert "editAddrLabel" in h
+
+    def test_suggest_chain_function(self):
+        assert "function suggestChain" in self._html()
