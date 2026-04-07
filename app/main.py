@@ -131,10 +131,12 @@ _sync_lock = asyncio.Lock()
 
 # ── Sync logic ────────────────────────────────────────────────────────────
 
-async def run_sync(exchange_name: str, full: bool = False):
+async def run_sync(exchange_name: str, full: bool = False, recompute: bool = True):
     """Pull all tax-relevant data from an exchange and resolve USD values."""
     async with _sync_lock:
         await _run_sync_inner(exchange_name, full)
+    if recompute:
+        await _run_recompute_after_sync()
 
 
 async def _run_sync_inner(exchange_name: str, full: bool = False):
@@ -330,9 +332,9 @@ async def _run_recompute_after_sync():
 
 async def run_sync_all(full: bool = False):
     for name in settings.enabled_exchanges:
-        await run_sync(name, full=full)
+        await run_sync(name, full=full, recompute=False)  # Don't recompute per-exchange
 
-    # Auto-recompute after all exchanges have synced
+    # Auto-recompute once after all exchanges have synced
     await _run_recompute_after_sync()
 
 
@@ -831,6 +833,22 @@ from income_classifier_v4 import IncomeClassifierV4
 from tax_engine_v4 import TaxEngineV4
 
 
+async def _resolve_run_id(session, requested_run_id: int | None = None, year: int | None = None) -> int | None:
+    """Return the latest completed/filing_blocked run_id for the given year."""
+    if requested_run_id is not None:
+        return requested_run_id
+    from sqlalchemy import text as t
+    r = await session.execute(t("""
+        SELECT id FROM tax.run_manifest
+        WHERE status IN ('completed', 'filing_blocked')
+          AND (:year IS NULL OR tax_year = :year)
+        ORDER BY completed_at DESC NULLS LAST, id DESC
+        LIMIT 1
+    """), {"year": year})
+    row = r.fetchone()
+    return row[0] if row else None
+
+
 async def _create_run_manifest(session, run_type: str, tax_year: int = None,
                                config_snapshot: dict = None) -> int:
     """Create a run_manifest record and return its ID."""
@@ -920,6 +938,32 @@ async def _compute_v4_full(year: int) -> dict:
         engine = TaxEngineV4(exc, val)
         inc_count = await engine.create_income_lots(session, run_id)
         results["income_lots"] = inc_count
+        await session.commit()
+
+    # Step 4.5: Reclassify remaining UNRESOLVED deposits as ACQUISITION
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        reclassified = await session.execute(t("""
+            UPDATE tax.normalized_events
+            SET event_type = 'ACQUISITION',
+                classification_rule = 'external deposit — reclassified from UNRESOLVED'
+            WHERE run_id = :run_id
+              AND event_type = 'UNRESOLVED'
+              AND source_deposit_id IS NOT NULL
+            RETURNING id
+        """), {"run_id": run_id})
+        reclass_ids = reclassified.fetchall()
+        results["deposits_reclassified_to_acquisition"] = len(reclass_ids)
+        await session.commit()
+        if reclass_ids:
+            logger.info(f"Reclassified {len(reclass_ids)} unresolved deposits as ACQUISITION")
+
+    # Step 4.6: Create lots from newly reclassified ACQUISITION deposits
+    async with db.get_session() as session:
+        val = ValuationV4(exc)
+        engine = TaxEngineV4(exc, val)
+        dep_lot_count = await engine.create_acquisition_lots(session, run_id)
+        results["deposit_acquisition_lots"] = dep_lot_count
         await session.commit()
 
     # Step 5: Process disposals + Form 8949
@@ -1124,7 +1168,7 @@ async def v4_resolve_exception(exception_id: int,
 
 @app.get("/v4/events")
 async def v4_events(wallet: str = Query(None), asset: str = Query(None),
-                    event_type: str = Query(None),
+                    event_type: str = Query(None), run_id: int = Query(None),
                     limit: int = Query(100, le=1000),
                     offset: int = Query(0)):
     """Browse normalized event ledger."""
@@ -1142,6 +1186,10 @@ async def v4_events(wallet: str = Query(None), asset: str = Query(None),
 
     async with db.get_session() as session:
         from sqlalchemy import text as t
+        resolved = await _resolve_run_id(session, run_id)
+        if resolved:
+            where.append("run_id = :run_id")
+            params["run_id"] = resolved
         r = await session.execute(t(f"""
             SELECT id, event_type, wallet, asset, quantity::text,
                    unit_price_usd::text, total_usd::text, event_at,
@@ -1153,12 +1201,12 @@ async def v4_events(wallet: str = Query(None), asset: str = Query(None),
             LIMIT :limit OFFSET :offset
         """), params)
         events = [dict(zip(r.keys(), row)) for row in r.fetchall()]
-    return {"count": len(events), "events": events}
+    return {"count": len(events), "events": events, "run_id": resolved}
 
 
 @app.get("/v4/lots")
 async def v4_lots(wallet: str = Query(None), asset: str = Query(None),
-                  show_depleted: bool = Query(False)):
+                  run_id: int = Query(None), show_depleted: bool = Query(False)):
     """Browse lots per wallet."""
     where = ["1=1"]
     params: dict = {}
@@ -1173,6 +1221,10 @@ async def v4_lots(wallet: str = Query(None), asset: str = Query(None),
 
     async with db.get_session() as session:
         from sqlalchemy import text as t
+        resolved = await _resolve_run_id(session, run_id)
+        if resolved:
+            where.append("run_id = :run_id")
+            params["run_id"] = resolved
         r = await session.execute(t(f"""
             SELECT id, asset, wallet, original_quantity::text, remaining::text,
                    cost_per_unit_usd::text, total_cost_usd::text,
@@ -1187,19 +1239,25 @@ async def v4_lots(wallet: str = Query(None), asset: str = Query(None),
 
 
 @app.get("/v4/form-8949")
-async def v4_form_8949(year: int = Query(...)):
+async def v4_form_8949(year: int = Query(...), run_id: int = Query(None)):
     """Form 8949 from v4 engine."""
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        result = await session.execute(t("""
+        resolved = await _resolve_run_id(session, run_id, year)
+        params: dict = {"year": year}
+        run_filter = ""
+        if resolved:
+            run_filter = " AND run_id = :run_id"
+            params["run_id"] = resolved
+        result = await session.execute(t(f"""
             SELECT description, date_acquired, date_sold, proceeds::text,
                    cost_basis::text, adjustment_code, adjustment_amount::text,
                    gain_loss::text, term, box, asset, wallet, exchange,
                    holding_days, is_futures
             FROM tax.form_8949_v4
-            WHERE tax_year = :year
+            WHERE tax_year = :year{run_filter}
             ORDER BY date_sold, asset
-        """), {"year": year})
+        """), params)
         lines = [dict(zip(result.keys(), row)) for row in result.fetchall()]
 
     from decimal import Decimal as D
@@ -1217,11 +1275,17 @@ async def v4_form_8949(year: int = Query(...)):
 
 
 @app.get("/v4/schedule-d")
-async def v4_schedule_d(year: int = Query(...)):
+async def v4_schedule_d(year: int = Query(...), run_id: int = Query(None)):
     """Schedule D summary from v4 engine."""
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        r = await session.execute(t("""
+        resolved = await _resolve_run_id(session, run_id, year)
+        params: dict = {"year": year}
+        run_filter = ""
+        if resolved:
+            run_filter = " AND run_id = :run_id"
+            params["run_id"] = resolved
+        r = await session.execute(t(f"""
             SELECT
                 COALESCE(SUM(CASE WHEN term='short' THEN proceeds END), 0)::text,
                 COALESCE(SUM(CASE WHEN term='short' THEN cost_basis END), 0)::text,
@@ -1231,8 +1295,8 @@ async def v4_schedule_d(year: int = Query(...)):
                 COALESCE(SUM(CASE WHEN term='long' THEN gain_loss END), 0)::text,
                 COUNT(*)
             FROM tax.form_8949_v4
-            WHERE tax_year = :year
-        """), {"year": year})
+            WHERE tax_year = :year{run_filter}
+        """), params)
         row = r.fetchone()
 
     from decimal import Decimal as D
@@ -1246,7 +1310,7 @@ async def v4_schedule_d(year: int = Query(...)):
 
 
 @app.get("/v4/income")
-async def v4_income(year: int = Query(None)):
+async def v4_income(year: int = Query(None), run_id: int = Query(None)):
     """Income events with review status."""
     where = "WHERE 1=1"
     params: dict = {}
@@ -1256,6 +1320,10 @@ async def v4_income(year: int = Query(None)):
 
     async with db.get_session() as session:
         from sqlalchemy import text as t
+        resolved = await _resolve_run_id(session, run_id, year)
+        if resolved:
+            where += " AND run_id = :run_id"
+            params["run_id"] = resolved
         r = await session.execute(t(f"""
             SELECT id, wallet, asset, quantity::text, fmv_per_unit_usd::text,
                    total_fmv_usd::text, income_type, classification_source,
@@ -1281,19 +1349,26 @@ async def v4_income(year: int = Query(None)):
 
 
 @app.get("/v4/transfers")
-async def v4_transfers():
+async def v4_transfers(run_id: int = Query(None)):
     """Transfer carryover records."""
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        r = await session.execute(t("""
+        resolved = await _resolve_run_id(session, run_id)
+        params: dict = {}
+        run_filter = ""
+        if resolved:
+            run_filter = "WHERE run_id = :run_id"
+            params["run_id"] = resolved
+        r = await session.execute(t(f"""
             SELECT id, asset, quantity::text, source_wallet, dest_wallet,
                    original_acquired_at, carryover_basis_usd::text,
                    cost_per_unit_usd::text, transferred_at, tx_hash,
                    transfer_fee::text, match_confidence
             FROM tax.transfer_carryover
+            {run_filter}
             ORDER BY transferred_at DESC
             LIMIT 200
-        """))
+        """), params)
         transfers = [dict(zip(r.keys(), row)) for row in r.fetchall()]
     return {"count": len(transfers), "transfers": transfers}
 
@@ -1793,7 +1868,7 @@ async def v4_classify_flows(run_id: int = Query(None)):
 
 
 @app.get("/v4/funding-by-exchange")
-async def v4_funding_by_exchange(year: int = Query(None)):
+async def v4_funding_by_exchange(year: int = Query(None), run_id: int = Query(None)):
     """Return classified funding flows grouped by exchange."""
     where = "WHERE 1=1"
     params: dict = {}
@@ -1803,6 +1878,10 @@ async def v4_funding_by_exchange(year: int = Query(None)):
 
     async with db.get_session() as session:
         from sqlalchemy import text as t
+        resolved = await _resolve_run_id(session, run_id, year)
+        if resolved:
+            where += " AND run_id = :run_id"
+            params["run_id"] = resolved
         r = await session.execute(t(f"""
             SELECT exchange,
                 COALESCE(SUM(CASE WHEN flow_class = 'EXTERNAL_DEPOSIT' THEN total_usd END), 0)::text AS external_in_usd,
@@ -1822,11 +1901,17 @@ async def v4_funding_by_exchange(year: int = Query(None)):
 
 
 @app.get("/v4/pnl-by-exchange")
-async def v4_pnl_by_exchange(year: int = Query(...)):
+async def v4_pnl_by_exchange(year: int = Query(...), run_id: int = Query(None)):
     """Realized P&L summary grouped by exchange for accountant review."""
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        r = await session.execute(t("""
+        resolved = await _resolve_run_id(session, run_id, year)
+        params: dict = {"year": year}
+        run_filter = ""
+        if resolved:
+            run_filter = " AND run_id = :run_id"
+            params["run_id"] = resolved
+        r = await session.execute(t(f"""
             SELECT
                 exchange,
                 COUNT(*) AS disposal_count,
@@ -1840,10 +1925,10 @@ async def v4_pnl_by_exchange(year: int = Query(...)):
                 COALESCE(SUM(CASE WHEN term = 'long' THEN gain_loss END), 0)::text AS lt_net,
                 COALESCE(SUM(gain_loss), 0)::text AS total_net_usd
             FROM tax.form_8949_v4
-            WHERE tax_year = :year
+            WHERE tax_year = :year{run_filter}
             GROUP BY exchange
             ORDER BY exchange
-        """), {"year": year})
+        """), params)
         rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
     return rows
 

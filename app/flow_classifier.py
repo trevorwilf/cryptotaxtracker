@@ -60,11 +60,12 @@ class FlowClassifier:
         """), run_params)
         transfer_in_deposit_ids = {row[0] for row in r.fetchall()}
 
-        # Get income-tagged deposit IDs
-        r = await session.execute(text("""
+        # Get income-tagged deposit IDs (run-scoped)
+        income_run_filter = "AND run_id = :rid" if run_id else ""
+        r = await session.execute(text(f"""
             SELECT DISTINCT source_deposit_id FROM tax.income_events_v4
-            WHERE source_deposit_id IS NOT NULL
-        """))
+            WHERE source_deposit_id IS NOT NULL {income_run_filter}
+        """), run_params)
         income_deposit_ids = {row[0] for row in r.fetchall()}
 
         # Get transfer-matched withdrawal IDs
@@ -74,6 +75,14 @@ class FlowClassifier:
             {run_filter}
         """), run_params)
         transfer_out_withdrawal_ids = {row[0] for row in r.fetchall()}
+
+        # Get ACQUISITION-classified deposit IDs (external deposits that became lots)
+        r = await session.execute(text(f"""
+            SELECT DISTINCT ne.source_deposit_id FROM tax.normalized_events ne
+            WHERE ne.event_type = 'ACQUISITION' AND ne.source_deposit_id IS NOT NULL
+            {run_filter}
+        """), run_params)
+        acquisition_deposit_ids = {row[0] for row in r.fetchall()}
 
         # Classify deposits
         r = await session.execute(text("""
@@ -89,6 +98,9 @@ class FlowClassifier:
             elif dep_id in income_deposit_ids:
                 flow_class = "INCOME_RECEIPT"
                 rule = "Classified as income in income_events_v4"
+            elif dep_id in acquisition_deposit_ids:
+                flow_class = "EXTERNAL_DEPOSIT"
+                rule = "Classified as ACQUISITION — external deposit"
             else:
                 flow_class = "EXTERNAL_DEPOSIT"
                 rule = "No transfer match or income classification found"

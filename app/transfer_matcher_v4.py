@@ -50,7 +50,7 @@ class TransferMatcherV4:
         # Get unresolved withdrawal events
         wd_result = await session.execute(text("""
             SELECT ne.id, ne.wallet, ne.asset, ne.quantity::text, ne.event_at,
-                   w.tx_hash, w.address,
+                   w.tx_hash, w.address, COALESCE(w.canonical_asset, w.asset) AS canonical_asset,
                    w.fee::text, COALESCE(w.fee_asset, w.asset) AS fee_asset, ne.source_withdrawal_id
             FROM tax.normalized_events ne
             LEFT JOIN tax.withdrawals w ON w.id = ne.source_withdrawal_id
@@ -64,7 +64,8 @@ class TransferMatcherV4:
         # Get unresolved deposit events
         dep_result = await session.execute(text("""
             SELECT ne.id, ne.wallet, ne.asset, ne.quantity::text, ne.event_at,
-                   d.tx_hash, d.address, ne.source_deposit_id
+                   d.tx_hash, d.address, COALESCE(d.canonical_asset, d.asset) AS canonical_asset,
+                   ne.source_deposit_id
             FROM tax.normalized_events ne
             LEFT JOIN tax.deposits d ON d.id = ne.source_deposit_id
             WHERE ne.event_type = 'UNRESOLVED'
@@ -148,8 +149,10 @@ class TransferMatcherV4:
 
     def _check_match(self, wd: dict, dep: dict, claims: dict = None) -> str | None:
         """Check if a withdrawal-deposit pair matches. Returns confidence or None."""
-        # 1. Same asset required
-        if dep["asset"] != wd["asset"]:
+        # 1. Same asset required (use canonical_asset if available)
+        wd_asset = wd.get("canonical_asset") or wd["asset"]
+        dep_asset = dep.get("canonical_asset") or dep["asset"]
+        if dep_asset != wd_asset:
             return None
 
         # 2. Deposit must be after withdrawal

@@ -23,7 +23,7 @@ class TestRunScoping:
         # Check that pnl endpoint accepts run_id param
         import main as m
         sig = inspect.signature(m.v4_pnl_by_exchange)
-        assert "run_id" in sig.parameters or True  # soft check
+        assert "run_id" in sig.parameters, "v4_pnl_by_exchange missing run_id parameter"
 
     def test_activity_start_endpoint_exists(self):
         import main as m

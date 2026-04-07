@@ -505,6 +505,15 @@ CREATE TABLE IF NOT EXISTS tax.classified_flows (
 CREATE INDEX IF NOT EXISTS idx_cf_exchange ON tax.classified_flows(exchange, flow_class);
 CREATE INDEX IF NOT EXISTS idx_cf_class ON tax.classified_flows(flow_class);
 
+-- Run-scoped indexes for v4 tables
+CREATE INDEX IF NOT EXISTS idx_normalized_events_run_id ON tax.normalized_events(run_id, event_at, id);
+CREATE INDEX IF NOT EXISTS idx_lots_v4_run_id ON tax.lots_v4(run_id, wallet, asset);
+CREATE INDEX IF NOT EXISTS idx_disposals_v4_run_id ON tax.disposals_v4(run_id, disposed_at, id);
+CREATE INDEX IF NOT EXISTS idx_transfer_carryover_run_id ON tax.transfer_carryover(run_id);
+CREATE INDEX IF NOT EXISTS idx_classified_flows_run_id ON tax.classified_flows(run_id, exchange, flow_class);
+CREATE INDEX IF NOT EXISTS idx_income_events_v4_run_id ON tax.income_events_v4(run_id);
+CREATE INDEX IF NOT EXISTS idx_exceptions_run_id ON tax.exceptions(run_id, severity, category);
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- EXCHANGE INTERNAL TRANSFERS (e.g. MEXC universal transfers spot→futures)
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -610,6 +619,17 @@ CREATE TABLE IF NOT EXISTS tax.import_stage_rows (
     result_id INTEGER,
     error TEXT,
     UNIQUE(stage_id, row_index)
+);
+
+CREATE TABLE IF NOT EXISTS tax.asset_aliases (
+    id              SERIAL PRIMARY KEY,
+    exchange        VARCHAR(50),
+    raw_asset       VARCHAR(100) NOT NULL,
+    network         VARCHAR(100),
+    canonical_asset VARCHAR(50) NOT NULL,
+    confidence      VARCHAR(20) DEFAULT 'verified',
+    notes           TEXT,
+    UNIQUE(exchange, raw_asset, network)
 );
 
 CREATE TABLE IF NOT EXISTS tax.activity_start (

@@ -42,12 +42,11 @@ class TestAutoRecompute:
         source = inspect.getsource(m.run_sync_all)
         assert "_run_recompute_after_sync" in source
 
-    def test_single_sync_does_not_call_recompute(self):
-        """run_sync (single exchange) should NOT call recompute."""
+    def test_single_sync_also_triggers_recompute(self):
+        """run_sync (single exchange) should also recompute when recompute=True."""
         import main as m
         source = inspect.getsource(m.run_sync)
-        assert "_run_recompute_after_sync" not in source
-        assert "_compute_v4_full" not in source
+        assert "_run_recompute_after_sync" in source
 
     def test_recompute_status_dict_exists(self):
         import main as m
