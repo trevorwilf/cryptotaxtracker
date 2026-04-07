@@ -1937,10 +1937,16 @@ async def v4_pnl_by_exchange(year: int = Query(...), run_id: int = Query(None)):
 # WALLET OWNERSHIP / ADDRESS CLAIMS
 # ══════════════════════════════════════════════════════════════════════════
 
+VALID_ENTITY_TYPES = {"taxpayer", "spouse", "business", "third_party"}
+VALID_ACCOUNT_TYPES = {"exchange", "hardware_wallet", "software_wallet", "custodial", "other"}
+
+
 @app.post("/v4/wallet/entities")
 async def wallet_create_entity(entity_type: str = Query(...), label: str = Query(...),
                                 notes: str = Query(None)):
-    """Create a wallet entity (taxpayer, spouse, business, third_party)."""
+    """Create a wallet entity."""
+    if entity_type not in VALID_ENTITY_TYPES:
+        raise HTTPException(400, f"entity_type must be one of: {', '.join(sorted(VALID_ENTITY_TYPES))}")
     async with db.get_session() as session:
         from sqlalchemy import text as t
         r = await session.execute(t("""
@@ -1997,10 +2003,78 @@ async def wallet_list_entities():
     return result
 
 
+@app.get("/v4/wallet/entities/{entity_id}")
+async def wallet_get_entity(entity_id: int):
+    """Get a single entity with nested accounts and addresses."""
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t("""
+            SELECT e.id, e.entity_type, e.label, e.notes, e.created_at,
+                   a.id AS account_id, a.account_type, a.exchange_name,
+                   a.label AS account_label, a.notes AS account_notes,
+                   wa.id AS address_id, wa.address, wa.chain, wa.network,
+                   wa.token_contract, wa.label AS address_label, wa.is_active
+            FROM tax.wallet_entities e
+            LEFT JOIN tax.wallet_accounts a ON a.entity_id = e.id
+            LEFT JOIN tax.wallet_addresses wa ON wa.account_id = a.id
+            WHERE e.id = :eid ORDER BY a.id, wa.id
+        """), {"eid": entity_id})
+        rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+    if not rows:
+        raise HTTPException(404, f"Entity {entity_id} not found")
+    first = rows[0]
+    entity = {"id": first["id"], "entity_type": first["entity_type"],
+              "label": first["label"], "notes": first["notes"],
+              "created_at": str(first["created_at"]) if first["created_at"] else None,
+              "accounts": []}
+    accounts = {}
+    for row in rows:
+        if row["account_id"] and row["account_id"] not in accounts:
+            accounts[row["account_id"]] = {
+                "id": row["account_id"], "account_type": row["account_type"],
+                "exchange_name": row["exchange_name"], "label": row["account_label"],
+                "notes": row["account_notes"], "addresses": []}
+        if row["address_id"] and row["account_id"]:
+            accounts[row["account_id"]]["addresses"].append({
+                "id": row["address_id"], "address": row["address"],
+                "chain": row["chain"], "network": row["network"],
+                "label": row["address_label"], "is_active": row["is_active"]})
+    entity["accounts"] = list(accounts.values())
+    return entity
+
+
+@app.patch("/v4/wallet/entities/{entity_id}")
+async def wallet_update_entity(entity_id: int, entity_type: str = Query(None),
+                                label: str = Query(None), notes: str = Query(None)):
+    """Update a wallet entity."""
+    updates, params = [], {"id": entity_id}
+    if entity_type is not None:
+        if entity_type not in VALID_ENTITY_TYPES:
+            raise HTTPException(400, f"entity_type must be one of: {', '.join(sorted(VALID_ENTITY_TYPES))}")
+        updates.append("entity_type = :et"); params["et"] = entity_type
+    if label is not None:
+        if not label.strip():
+            raise HTTPException(400, "label cannot be empty")
+        updates.append("label = :label"); params["label"] = label.strip()
+    if notes is not None:
+        updates.append("notes = :notes"); params["notes"] = notes if notes.strip() else None
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"UPDATE tax.wallet_entities SET {', '.join(updates)} WHERE id = :id RETURNING id"), params)
+        if not r.fetchone():
+            raise HTTPException(404, f"Entity {entity_id} not found")
+        await session.commit()
+    return {"updated": entity_id}
+
+
 @app.post("/v4/wallet/accounts")
 async def wallet_create_account(entity_id: int = Query(...), account_type: str = Query(...),
                                  exchange_name: str = Query(None), label: str = Query(...)):
     """Create a wallet account under an entity."""
+    if account_type not in VALID_ACCOUNT_TYPES:
+        raise HTTPException(400, f"account_type must be one of: {', '.join(sorted(VALID_ACCOUNT_TYPES))}")
     async with db.get_session() as session:
         from sqlalchemy import text as t
         r = await session.execute(t("""
@@ -2137,11 +2211,69 @@ async def wallet_auto_discover():
     }
 
 
+@app.patch("/v4/wallet/accounts/{account_id}")
+async def wallet_update_account(account_id: int, account_type: str = Query(None),
+                                 exchange_name: str = Query(None), label: str = Query(None),
+                                 notes: str = Query(None)):
+    """Update a wallet account."""
+    updates, params = [], {"id": account_id}
+    if account_type is not None:
+        if account_type not in VALID_ACCOUNT_TYPES:
+            raise HTTPException(400, f"account_type must be one of: {', '.join(sorted(VALID_ACCOUNT_TYPES))}")
+        updates.append("account_type = :at"); params["at"] = account_type
+    if exchange_name is not None:
+        updates.append("exchange_name = :en"); params["en"] = exchange_name if exchange_name.strip() else None
+    if label is not None:
+        if not label.strip():
+            raise HTTPException(400, "label cannot be empty")
+        updates.append("label = :label"); params["label"] = label.strip()
+    if notes is not None:
+        updates.append("notes = :notes"); params["notes"] = notes if notes.strip() else None
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"UPDATE tax.wallet_accounts SET {', '.join(updates)} WHERE id = :id RETURNING id"), params)
+        if not r.fetchone():
+            raise HTTPException(404, f"Account {account_id} not found")
+        await session.commit()
+    return {"updated": account_id}
+
+
+@app.patch("/v4/wallet/addresses/{address_id}")
+async def wallet_update_address(address_id: int, chain: str = Query(None),
+                                 network: str = Query(None), label: str = Query(None),
+                                 token_contract: str = Query(None), is_active: bool = Query(None)):
+    """Update a wallet address's metadata. The address string itself is immutable."""
+    updates, params = [], {"id": address_id}
+    if chain is not None:
+        updates.append("chain = :chain"); params["chain"] = chain if chain.strip() else None
+    if network is not None:
+        updates.append("network = :net"); params["net"] = network if network.strip() else None
+    if label is not None:
+        updates.append("label = :label"); params["label"] = label if label.strip() else None
+    if token_contract is not None:
+        updates.append("token_contract = :tc"); params["tc"] = token_contract if token_contract.strip() else None
+    if is_active is not None:
+        updates.append("is_active = :active"); params["active"] = is_active
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        r = await session.execute(t(f"UPDATE tax.wallet_addresses SET {', '.join(updates)} WHERE id = :id RETURNING id"), params)
+        if not r.fetchone():
+            raise HTTPException(404, f"Address {address_id} not found")
+        await session.commit()
+    return {"updated": address_id}
+
+
 @app.delete("/v4/wallet/entities/{entity_id}")
 async def wallet_delete_entity(entity_id: int):
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        await session.execute(t("DELETE FROM tax.wallet_entities WHERE id = :id"), {"id": entity_id})
+        r = await session.execute(t("DELETE FROM tax.wallet_entities WHERE id = :id RETURNING id"), {"id": entity_id})
+        if not r.fetchone():
+            raise HTTPException(404, f"Entity {entity_id} not found")
         await session.commit()
     return {"deleted": entity_id}
 
@@ -2150,7 +2282,9 @@ async def wallet_delete_entity(entity_id: int):
 async def wallet_delete_account(account_id: int):
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        await session.execute(t("DELETE FROM tax.wallet_accounts WHERE id = :id"), {"id": account_id})
+        r = await session.execute(t("DELETE FROM tax.wallet_accounts WHERE id = :id RETURNING id"), {"id": account_id})
+        if not r.fetchone():
+            raise HTTPException(404, f"Account {account_id} not found")
         await session.commit()
     return {"deleted": account_id}
 
@@ -2159,7 +2293,9 @@ async def wallet_delete_account(account_id: int):
 async def wallet_delete_address(address_id: int):
     async with db.get_session() as session:
         from sqlalchemy import text as t
-        await session.execute(t("DELETE FROM tax.wallet_addresses WHERE id = :id"), {"id": address_id})
+        r = await session.execute(t("DELETE FROM tax.wallet_addresses WHERE id = :id RETURNING id"), {"id": address_id})
+        if not r.fetchone():
+            raise HTTPException(404, f"Address {address_id} not found")
         await session.commit()
     return {"deleted": address_id}
 

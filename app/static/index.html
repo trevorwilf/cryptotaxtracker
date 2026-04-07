@@ -95,6 +95,15 @@
   .wallet-account { background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:0.75rem; margin:0.5rem 0; margin-left:1.5rem; }
   .wallet-address { font-family:'JetBrains Mono',monospace; font-size:11px; padding:4px 8px; background:var(--bg-primary); border-radius:4px; margin:4px 0; display:flex; justify-content:space-between; align-items:center; }
   .wallet-address .addr-text { color:var(--text-secondary); max-width:300px; overflow:hidden; text-overflow:ellipsis; }
+  .wallet-form { background:var(--bg-input); border:1px solid var(--border-bright); border-radius:8px; padding:1rem; margin:0.75rem 0; }
+  .wallet-form label { display:block; font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px; margin-top:8px; }
+  .wallet-form input, .wallet-form select, .wallet-form textarea { width:100%; font-size:12px; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin-bottom:4px; }
+  .wallet-form textarea { resize:vertical; min-height:50px; }
+  .wallet-form .form-actions { display:flex; gap:8px; margin-top:10px; }
+  .wallet-actions { display:flex; gap:4px; }
+  .wallet-actions button { background:none; border:none; cursor:pointer; font-size:13px; padding:2px 5px; border-radius:4px; opacity:0.5; transition:opacity 0.2s; }
+  .wallet-actions button:hover { opacity:1; }
+  .addr-active { color:var(--green); } .addr-inactive { color:var(--text-dim); text-decoration:line-through; }
 
   select,input[type="number"] { font-family:'JetBrains Mono',monospace; font-size:12px;
     background:var(--bg-input); color:var(--text-primary); border:1px solid var(--border);
@@ -1349,82 +1358,184 @@ function cancelImport(){
 }
 
 // ── Wallets Page ────────────────────────────────────────
-async function loadWallets() {
+async function loadWallets(){
   const el=document.getElementById('walletEntities');
   el.innerHTML='<div style="color:var(--text-dim);padding:1rem">Loading...</div>';
-  try {
+  try{
     const resp=await fetch('/v4/wallet/entities');
     const entities=await resp.json();
     if(!entities.length){el.innerHTML='<div class="card" style="color:var(--text-secondary)">No wallet entities yet. Click "+ Add Wallet Entity" to get started.</div>';return;}
-    el.innerHTML=entities.map(e=>`<div class="wallet-entity">
+    el.innerHTML=entities.map(e=>`<div class="wallet-entity" id="entity-${e.id}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div><span class="badge badge-purple">${e.entity_type}</span> <strong style="margin-left:6px">${e.label}</strong></div>
-        <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px" onclick="addAccountToEntity(${e.id})">+ Account</button>
+        <div><span class="badge badge-purple">${e.entity_type}</span> <strong style="margin-left:6px">${e.label}</strong>
+          ${e.notes?`<span style="color:var(--text-dim);font-size:11px;margin-left:8px">${e.notes}</span>`:''}</div>
+        <div class="wallet-actions">
+          <button onclick="editEntity(${e.id})" title="Edit">✏️</button>
+          <button onclick="deleteEntity(${e.id},'${e.label.replace(/'/g,"\\'")}')" title="Delete">🗑️</button>
+          <button class="btn btn-secondary" style="font-size:10px;padding:3px 10px" onclick="showAddAccountForm(${e.id})">+ Account</button>
+        </div>
       </div>
-      ${(e.accounts||[]).map(a=>`<div class="wallet-account">
-        <div style="margin-bottom:6px"><span class="badge badge-blue">${a.account_type}</span> ${a.exchange_name?`<span class="badge badge-green">${a.exchange_name}</span>`:''} <strong style="margin-left:4px;font-size:12px">${a.label}</strong>
-          <button class="btn btn-secondary" style="font-size:10px;padding:2px 8px;margin-left:8px" onclick="addAddressToAccount(${a.id})">+ Address</button>
+      <div id="entity-accounts-${e.id}">
+      ${(e.accounts||[]).map(a=>`<div class="wallet-account" id="account-${a.id}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div><span class="badge badge-blue">${a.account_type.replace(/_/g,' ')}</span> ${a.exchange_name?`<span class="badge badge-green">${a.exchange_name}</span>`:''} <strong style="margin-left:4px;font-size:12px">${a.label}</strong>
+            ${a.notes?`<span style="color:var(--text-dim);font-size:10px;margin-left:6px">${a.notes}</span>`:''}</div>
+          <div class="wallet-actions">
+            <button onclick="editAccount(${a.id})" title="Edit">✏️</button>
+            <button onclick="deleteAccount(${a.id},'${a.label.replace(/'/g,"\\'")}')" title="Delete">🗑️</button>
+            <button class="btn btn-secondary" style="font-size:9px;padding:2px 8px" onclick="showAddAddressForm(${a.id})">+ Address</button>
+          </div>
         </div>
         ${(a.addresses||[]).map(addr=>`<div class="wallet-address">
-          <span class="addr-text" title="${addr.address}">${addr.address}</span>
-          <span style="color:var(--text-dim);font-size:10px">${addr.chain||''} ${addr.label?'— '+addr.label:''}</span>
+          <span class="addr-text ${addr.is_active===false?'addr-inactive':'addr-active'}" title="${addr.address}">${addr.address}</span>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${addr.chain?`<span class="badge badge-blue" style="font-size:9px">${addr.chain}</span>`:''}
+            ${addr.label?`<span style="color:var(--text-dim);font-size:10px">${addr.label}</span>`:''}
+            <div class="wallet-actions">
+              <button onclick="editAddress(${addr.id})" title="Edit" style="font-size:11px">✏️</button>
+              <button onclick="deleteAddress(${addr.id},'${(addr.address||'').substring(0,20)}')" title="Delete" style="font-size:11px">🗑️</button>
+            </div>
+          </div>
         </div>`).join('')}
+        <div id="account-addr-form-${a.id}"></div>
       </div>`).join('')}
+      </div>
+      <div id="entity-acct-form-${e.id}"></div>
     </div>`).join('');
-  } catch(e) { el.innerHTML=`<div class="card" style="color:var(--red)">Error loading wallets: ${e}</div>`; }
+  }catch(e){el.innerHTML=`<div class="card" style="color:var(--red)">Error: ${e}</div>`;}
 }
 
-function showAddWalletForm() {
-  const label=prompt('Entity label (e.g. "My Personal Wallets"):');
-  if(!label) return;
-  const type=prompt('Entity type (taxpayer / spouse / business):','taxpayer');
-  if(!type) return;
-  fetch(`/v4/wallet/entities?entity_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}`,{method:'POST'}).then(()=>loadWallets());
+function showAddWalletForm(){
+  const container=document.getElementById('walletEntities');
+  if(document.getElementById('addEntityForm')){document.getElementById('addEntityForm').remove();return;}
+  const form=document.createElement('div');form.id='addEntityForm';form.className='wallet-form';
+  form.innerHTML=`<label>Entity Type</label><select id="newEntityType"><option value="taxpayer">Taxpayer</option><option value="spouse">Spouse</option><option value="business">Business</option><option value="third_party">Third Party</option></select>
+    <label>Label</label><input id="newEntityLabel" placeholder="e.g. My Personal Wallets">
+    <label>Notes</label><textarea id="newEntityNotes" placeholder="Optional notes"></textarea>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveNewEntity()">Save</button><button class="btn btn-secondary" onclick="this.closest('.wallet-form').remove()">Cancel</button></div>`;
+  container.insertBefore(form,container.firstChild);
 }
 
-function addAccountToEntity(entityId) {
-  const label=prompt('Account label (e.g. "MEXC Main Account"):');
-  if(!label) return;
-  const type=prompt('Account type (exchange / hardware_wallet / software_wallet):','exchange');
-  const exName=type==='exchange'?prompt('Exchange name (mexc / nonkyc):',''):null;
+async function saveNewEntity(){
+  const type=document.getElementById('newEntityType').value;
+  const label=document.getElementById('newEntityLabel').value.trim();
+  const notes=document.getElementById('newEntityNotes').value.trim();
+  if(!label){alert('Label is required');return;}
+  let url=`/v4/wallet/entities?entity_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}`;
+  if(notes)url+=`&notes=${encodeURIComponent(notes)}`;
+  await fetch(url,{method:'POST'});
+  const f=document.getElementById('addEntityForm');if(f)f.remove();
+  loadWallets();
+}
+
+async function editEntity(id){
+  const resp=await fetch(`/v4/wallet/entities/${id}`);const e=await resp.json();
+  const card=document.getElementById(`entity-${id}`);if(!card)return;
+  card.innerHTML=`<div class="wallet-form"><label>Entity Type</label><select id="editEntityType"><option value="taxpayer" ${e.entity_type==='taxpayer'?'selected':''}>Taxpayer</option><option value="spouse" ${e.entity_type==='spouse'?'selected':''}>Spouse</option><option value="business" ${e.entity_type==='business'?'selected':''}>Business</option><option value="third_party" ${e.entity_type==='third_party'?'selected':''}>Third Party</option></select>
+    <label>Label</label><input id="editEntityLabel" value="${e.label||''}">
+    <label>Notes</label><textarea id="editEntityNotes">${e.notes||''}</textarea>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveEditEntity(${id})">Save</button><button class="btn btn-secondary" onclick="loadWallets()">Cancel</button></div></div>`;
+}
+
+async function saveEditEntity(id){
+  const type=document.getElementById('editEntityType').value;
+  const label=document.getElementById('editEntityLabel').value.trim();
+  const notes=document.getElementById('editEntityNotes').value.trim();
+  let url=`/v4/wallet/entities/${id}?entity_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}&notes=${encodeURIComponent(notes)}`;
+  await fetch(url,{method:'PATCH'});loadWallets();
+}
+
+function deleteEntity(id,label){if(confirm(`Delete entity "${label}" and all its accounts/addresses?`))fetch(`/v4/wallet/entities/${id}`,{method:'DELETE'}).then(()=>loadWallets());}
+
+function showAddAccountForm(entityId){
+  const target=document.getElementById(`entity-acct-form-${entityId}`);
+  if(target.innerHTML){target.innerHTML='';return;}
+  target.innerHTML=`<div class="wallet-form"><label>Account Type</label><select id="newAcctType" onchange="document.getElementById('newAcctExDiv').style.display=this.value==='exchange'?'':'none'"><option value="exchange">Exchange</option><option value="hardware_wallet">Hardware Wallet</option><option value="software_wallet">Software Wallet</option><option value="custodial">Custodial</option><option value="other">Other</option></select>
+    <div id="newAcctExDiv"><label>Exchange Name</label><input id="newAcctExName" placeholder="e.g. mexc, nonkyc"></div>
+    <label>Label</label><input id="newAcctLabel" placeholder="e.g. MEXC Main Account">
+    <label>Notes</label><textarea id="newAcctNotes" placeholder="Optional"></textarea>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveNewAccount(${entityId})">Save</button><button class="btn btn-secondary" onclick="document.getElementById('entity-acct-form-${entityId}').innerHTML=''">Cancel</button></div></div>`;
+}
+
+async function saveNewAccount(entityId){
+  const type=document.getElementById('newAcctType').value;
+  const exName=document.getElementById('newAcctExName').value.trim();
+  const label=document.getElementById('newAcctLabel').value.trim();
+  if(!label){alert('Label is required');return;}
   let url=`/v4/wallet/accounts?entity_id=${entityId}&account_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}`;
-  if(exName) url+=`&exchange_name=${encodeURIComponent(exName)}`;
-  fetch(url,{method:'POST'}).then(()=>loadWallets());
+  if(exName)url+=`&exchange_name=${encodeURIComponent(exName)}`;
+  await fetch(url,{method:'POST'});loadWallets();
 }
 
-function addAddressToAccount(accountId) {
-  const addr=prompt('Blockchain address:');
-  if(!addr) return;
-  const chain=prompt('Chain (bitcoin / ethereum / solana / salvium):','');
-  const label=prompt('Label (optional):','');
+async function editAccount(id){
+  const resp=await fetch(`/v4/wallet/entities`);const all=await resp.json();
+  let acct=null;all.forEach(e=>(e.accounts||[]).forEach(a=>{if(a.id===id)acct=a;}));
+  if(!acct)return;
+  const card=document.getElementById(`account-${id}`);if(!card)return;
+  card.innerHTML=`<div class="wallet-form"><label>Account Type</label><select id="editAcctType"><option value="exchange" ${acct.account_type==='exchange'?'selected':''}>Exchange</option><option value="hardware_wallet" ${acct.account_type==='hardware_wallet'?'selected':''}>Hardware Wallet</option><option value="software_wallet" ${acct.account_type==='software_wallet'?'selected':''}>Software Wallet</option><option value="custodial" ${acct.account_type==='custodial'?'selected':''}>Custodial</option><option value="other" ${acct.account_type==='other'?'selected':''}>Other</option></select>
+    <label>Exchange Name</label><input id="editAcctExName" value="${acct.exchange_name||''}">
+    <label>Label</label><input id="editAcctLabel" value="${acct.label||''}">
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveEditAccount(${id})">Save</button><button class="btn btn-secondary" onclick="loadWallets()">Cancel</button></div></div>`;
+}
+
+async function saveEditAccount(id){
+  const type=document.getElementById('editAcctType').value;
+  const exName=document.getElementById('editAcctExName').value.trim();
+  const label=document.getElementById('editAcctLabel').value.trim();
+  let url=`/v4/wallet/accounts/${id}?account_type=${encodeURIComponent(type)}&label=${encodeURIComponent(label)}&exchange_name=${encodeURIComponent(exName)}`;
+  await fetch(url,{method:'PATCH'});loadWallets();
+}
+
+function deleteAccount(id,label){if(confirm(`Delete account "${label}" and all its addresses?`))fetch(`/v4/wallet/accounts/${id}`,{method:'DELETE'}).then(()=>loadWallets());}
+
+function showAddAddressForm(accountId){
+  const target=document.getElementById(`account-addr-form-${accountId}`);
+  if(target.innerHTML){target.innerHTML='';return;}
+  target.innerHTML=`<div class="wallet-form"><label>Blockchain Address</label><input id="newAddr" style="font-family:'JetBrains Mono',monospace" placeholder="e.g. bc1q...">
+    <label>Chain</label><input id="newAddrChain" placeholder="bitcoin / ethereum / solana / salvium">
+    <label>Label</label><input id="newAddrLabel" placeholder="Optional label">
+    <label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input type="checkbox" id="newAddrClaim" checked style="width:auto"> Auto-claim as self-owned</label>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveNewAddress(${accountId})">Save</button><button class="btn btn-secondary" onclick="document.getElementById('account-addr-form-${accountId}').innerHTML=''">Cancel</button></div></div>`;
+}
+
+async function saveNewAddress(accountId){
+  const addr=document.getElementById('newAddr').value.trim();
+  const chain=document.getElementById('newAddrChain').value.trim();
+  const label=document.getElementById('newAddrLabel').value.trim();
+  const claim=document.getElementById('newAddrClaim').checked;
+  if(!addr){alert('Address is required');return;}
   let url=`/v4/wallet/addresses?account_id=${accountId}&address=${encodeURIComponent(addr)}`;
-  if(chain) url+=`&chain=${encodeURIComponent(chain)}`;
-  if(label) url+=`&label=${encodeURIComponent(label)}`;
-  fetch(url,{method:'POST'}).then(r=>r.json()).then(res=>{
-    if(res.id){
-      const claimType=prompt('Claim this address as self_owned? (yes/no)','yes');
-      if(claimType==='yes'){
-        fetch(`/v4/wallet/claims?address_id=${res.id}&claim_type=self_owned&confidence=verified`,{method:'POST'}).then(()=>loadWallets());
-      } else { loadWallets(); }
-    }
-  });
+  if(chain)url+=`&chain=${encodeURIComponent(chain)}`;
+  if(label)url+=`&label=${encodeURIComponent(label)}`;
+  const r=await fetch(url,{method:'POST'});const res=await r.json();
+  if(claim&&res.id){await fetch(`/v4/wallet/claims?address_id=${res.id}&claim_type=self_owned&confidence=verified`,{method:'POST'});}
+  loadWallets();
 }
 
-async function autoDiscoverAddresses() {
+async function editAddress(id){
+  // Simple prompt-based for now since address card is small
+  const chain=prompt('Chain:','');
+  const label=prompt('Label:','');
+  let url=`/v4/wallet/addresses/${id}?`;
+  if(chain!==null)url+=`chain=${encodeURIComponent(chain)}&`;
+  if(label!==null)url+=`label=${encodeURIComponent(label)}`;
+  await fetch(url,{method:'PATCH'});loadWallets();
+}
+
+function deleteAddress(id,addr){if(confirm(`Delete address "${addr}..."?`))fetch(`/v4/wallet/addresses/${id}`,{method:'DELETE'}).then(()=>loadWallets());}
+
+async function autoDiscoverAddresses(){
   const el=document.getElementById('walletAutoDiscover');
   const results=document.getElementById('walletDiscoverResults');
-  el.style.display='block';
-  results.innerHTML='<div style="color:var(--text-dim)">Scanning...</div>';
-  try {
-    const resp=await fetch('/v4/wallet/auto-discover',{method:'POST'});
-    const data=await resp.json();
+  el.style.display='block';results.innerHTML='<div style="color:var(--text-dim)">Scanning...</div>';
+  try{
+    const resp=await fetch('/v4/wallet/auto-discover',{method:'POST'});const data=await resp.json();
     if(!data.suggestions||!data.suggestions.length){results.innerHTML='<div style="color:var(--text-secondary)">No cross-exchange address overlaps found.</div>';return;}
     results.innerHTML=`<div style="margin-bottom:8px;color:var(--text-secondary);font-size:12px">${data.suggestions.length} address(es) found on multiple exchanges:</div>`+
       data.suggestions.map(s=>`<div style="background:var(--amber-bg);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin-bottom:6px">
         <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)">${s.address.substring(0,40)}...</div>
-        <div style="font-size:11px;color:var(--amber);margin-top:4px">${s.reason||s.suggestion}</div>
-      </div>`).join('');
-  } catch(e) { results.innerHTML=`<div style="color:var(--red)">Error: ${e}</div>`; }
+        <div style="font-size:11px;color:var(--amber);margin-top:4px">${s.reason||s.suggestion}</div></div>`).join('');
+  }catch(e){results.innerHTML=`<div style="color:var(--red)">Error: ${e}</div>`;}
 }
 
 // ── Table Export ─────────────────────────────────────────
