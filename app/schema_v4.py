@@ -650,42 +650,25 @@ CREATE TABLE IF NOT EXISTS tax.wallet_claim_evidence (
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CASCADE FIX: Ensure deleting a parent cascades to children
+-- Uses DROP CONSTRAINT IF EXISTS (individual statements, semicolon-safe)
 -- ═══════════════════════════════════════════════════════════════════════════
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.table_constraints
-             WHERE constraint_name = 'wallet_accounts_entity_id_fkey'
-             AND table_schema = 'tax') THEN
-    ALTER TABLE tax.wallet_accounts DROP CONSTRAINT wallet_accounts_entity_id_fkey;
-  END IF;
-  ALTER TABLE tax.wallet_accounts
-    ADD CONSTRAINT wallet_accounts_entity_id_fkey
-    FOREIGN KEY (entity_id) REFERENCES tax.wallet_entities(id) ON DELETE CASCADE;
+ALTER TABLE tax.wallet_accounts DROP CONSTRAINT IF EXISTS wallet_accounts_entity_id_fkey;
+ALTER TABLE tax.wallet_accounts
+  ADD CONSTRAINT wallet_accounts_entity_id_fkey
+  FOREIGN KEY (entity_id) REFERENCES tax.wallet_entities(id) ON DELETE CASCADE;
 
-  IF EXISTS (SELECT 1 FROM information_schema.table_constraints
-             WHERE constraint_name = 'wallet_addresses_account_id_fkey'
-             AND table_schema = 'tax') THEN
-    ALTER TABLE tax.wallet_addresses DROP CONSTRAINT wallet_addresses_account_id_fkey;
-  END IF;
-  ALTER TABLE tax.wallet_addresses
-    ADD CONSTRAINT wallet_addresses_account_id_fkey
-    FOREIGN KEY (account_id) REFERENCES tax.wallet_accounts(id) ON DELETE CASCADE;
+ALTER TABLE tax.wallet_addresses DROP CONSTRAINT IF EXISTS wallet_addresses_account_id_fkey;
+ALTER TABLE tax.wallet_addresses
+  ADD CONSTRAINT wallet_addresses_account_id_fkey
+  FOREIGN KEY (account_id) REFERENCES tax.wallet_accounts(id) ON DELETE CASCADE;
 
-  IF EXISTS (SELECT 1 FROM information_schema.table_constraints
-             WHERE constraint_name = 'wallet_address_claims_address_id_fkey'
-             AND table_schema = 'tax') THEN
-    ALTER TABLE tax.wallet_address_claims DROP CONSTRAINT wallet_address_claims_address_id_fkey;
-  END IF;
-  ALTER TABLE tax.wallet_address_claims
-    ADD CONSTRAINT wallet_address_claims_address_id_fkey
-    FOREIGN KEY (address_id) REFERENCES tax.wallet_addresses(id) ON DELETE CASCADE;
+ALTER TABLE tax.wallet_address_claims DROP CONSTRAINT IF EXISTS wallet_address_claims_address_id_fkey;
+ALTER TABLE tax.wallet_address_claims
+  ADD CONSTRAINT wallet_address_claims_address_id_fkey
+  FOREIGN KEY (address_id) REFERENCES tax.wallet_addresses(id) ON DELETE CASCADE;
 
-  IF EXISTS (SELECT 1 FROM information_schema.table_constraints
-             WHERE constraint_name = 'wallet_claim_evidence_claim_id_fkey'
-             AND table_schema = 'tax') THEN
-    ALTER TABLE tax.wallet_claim_evidence DROP CONSTRAINT wallet_claim_evidence_claim_id_fkey;
-  END IF;
-  ALTER TABLE tax.wallet_claim_evidence
-    ADD CONSTRAINT wallet_claim_evidence_claim_id_fkey
-    FOREIGN KEY (claim_id) REFERENCES tax.wallet_address_claims(id) ON DELETE CASCADE;
-END $$;
+ALTER TABLE tax.wallet_claim_evidence DROP CONSTRAINT IF EXISTS wallet_claim_evidence_claim_id_fkey;
+ALTER TABLE tax.wallet_claim_evidence
+  ADD CONSTRAINT wallet_claim_evidence_claim_id_fkey
+  FOREIGN KEY (claim_id) REFERENCES tax.wallet_address_claims(id) ON DELETE CASCADE;
 """
