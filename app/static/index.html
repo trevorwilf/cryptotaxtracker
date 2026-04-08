@@ -497,7 +497,9 @@
     <div class="card-title">🔍 Address Discovery <span id="discoverSummary" class="badge badge-blue" style="margin-left:6px"></span></div>
     <div class="btn-row" style="margin-bottom:1rem">
       <button class="btn btn-secondary discoverFilter active" onclick="filterDiscovered('unclaimed',this)">Unclaimed</button>
-      <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('claimed',this)">Already Claimed</button>
+      <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('registered',this)">Registered</button>
+      <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('claimed',this)">Claimed</button>
+      <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('pairs',this)">Transfer Pairs</button>
       <button class="btn btn-secondary discoverFilter" onclick="filterDiscovered('all',this)">All</button>
     </div>
     <div id="walletDiscoverResults"></div>
@@ -587,8 +589,8 @@
 <div class="page" id="page-v4-transfers">
   <div class="btn-row"><button class="btn btn-primary" onclick="loadV4Transfers()">Load Transfer Carryover</button></div>
   <div class="card"><div class="card-title">Lot-Slice Relocation Records <span id="v4TrCount" class="badge badge-green"></span></div>
-    <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Qty</th><th>From</th><th>To</th><th>Orig Acquired</th><th>Basis (USD)</th><th>Transferred</th><th>Confidence</th></tr></thead>
-    <tbody id="v4TransfersTable"><tr><td colspan="8" class="cell-dim">Click Load</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Qty</th><th>From (Wallet)</th><th>To (Wallet)</th><th>Tax Status</th><th>Orig Acquired</th><th>Basis (USD)</th><th>Transferred</th><th>Confidence</th></tr></thead>
+    <tbody id="v4TransfersTable"><tr><td colspan="9" class="cell-dim">Click Load</td></tr></tbody></table></div>
   </div>
 </div>
 
@@ -951,8 +953,16 @@ document.getElementById('v4LotsTable').innerHTML=rows||'<tr><td colspan="9" clas
 // ── v4 Transfers ────────────────────────────────────────
 async function loadV4Transfers(){const d=await api('/v4/transfers');if(!d)return;
 document.getElementById('v4TrCount').textContent=(d.count||0)+' records';
-const trs=d.transfers||[];let rows='';trs.forEach(t=>{rows+=`<tr><td style="font-weight:600">${t.asset}</td><td>${fC(t.quantity)}</td><td>${t.source_wallet}</td><td>${t.dest_wallet}</td><td class="cell-dim">${fD(t.original_acquired_at)}</td><td class="cell-usd">${fU(t.carryover_basis_usd)}</td><td class="cell-dim">${fD(t.transferred_at)}</td><td><span class="badge ${t.match_confidence==='tx_hash'?'badge-green':'badge-amber'}">${t.match_confidence}</span></td></tr>`;});
-document.getElementById('v4TransfersTable').innerHTML=rows||'<tr><td colspan="8" class="cell-dim">No transfers — run v4 Pipeline first</td></tr>';}
+const trs=d.transfers||[];let rows='';trs.forEach(t=>{
+  const fromOwned=t.wd_claim_type==='self_owned';
+  const fromLabel=t.wd_entity_label?` (${t.wd_entity_label})`:'';
+  const fromIcon=fromOwned?'✅':(t.wd_entity_label?'🏢':'❓');
+  const toOwned=t.dep_claim_type==='self_owned';
+  const toLabel=t.dep_entity_label?` (${t.dep_entity_label})`:'';
+  const toIcon=toOwned?'✅':(t.dep_entity_label?'🏢':'❓');
+  const taxBadge=t.both_owned?'<span class="badge badge-green">Non-Taxable</span>':'<span class="badge badge-amber">Review</span>';
+  rows+=`<tr><td style="font-weight:600">${t.asset}</td><td>${fC(t.quantity)}</td><td>${fromIcon} ${t.source_wallet}${fromLabel}</td><td>${toIcon} ${t.dest_wallet}${toLabel}</td><td>${taxBadge}</td><td class="cell-dim">${fD(t.original_acquired_at)}</td><td class="cell-usd">${fU(t.carryover_basis_usd)}</td><td class="cell-dim">${fD(t.transferred_at)}</td><td><span class="badge ${t.match_confidence==='tx_hash'?'badge-green':'badge-amber'}">${t.match_confidence}</span></td></tr>`;});
+document.getElementById('v4TransfersTable').innerHTML=rows||'<tr><td colspan="9" class="cell-dim">No transfers — run v4 Pipeline first</td></tr>';}
 
 // ── v4 Income ───────────────────────────────────────────
 async function loadV4Income(){const yr=document.getElementById('v4IncYear').value;const d=await api('/v4/income?year='+yr);if(!d)return;
@@ -1391,7 +1401,14 @@ async function loadWallets(){
             <button class="btn btn-secondary" style="font-size:9px;padding:2px 8px" onclick="showAddAddressForm(${a.id})">+ Address</button>
           </div>
         </div>
-        ${(a.addresses||[]).map(addr=>`<div class="wallet-address">
+        ${(a.addresses||[]).map(addr=>{
+          const claimIcon=addr.claim_type==='self_owned'
+            ?`<span title="Claimed: self-owned" style="color:var(--green);font-size:13px;cursor:pointer" onclick="toggleClaim(${addr.id},${addr.claim_id})">✅</span>`
+            :addr.claim_id
+              ?`<span title="Claimed: ${addr.claim_type}" style="color:var(--amber);font-size:13px">⚠️</span>`
+              :`<span title="Not claimed — click to claim" style="color:var(--text-dim);font-size:13px;cursor:pointer" onclick="toggleClaim(${addr.id},null)">❌</span>`;
+          return`<div class="wallet-address">
+          ${claimIcon}
           <span class="addr-text ${addr.is_active===false?'addr-inactive':'addr-active'}" title="${addr.address}">${addr.address}</span>
           <div style="display:flex;align-items:center;gap:6px">
             ${addr.chain?`<span class="badge badge-blue" style="font-size:9px">${addr.chain}</span>`:''}
@@ -1401,7 +1418,7 @@ async function loadWallets(){
               <button onclick="deleteAddress(${addr.id},'${(addr.address||'').substring(0,20)}')" title="Delete" style="font-size:11px">🗑️</button>
             </div>
           </div>
-        </div>`).join('')}
+        </div>`;}).join('')}
         <div id="account-addr-form-${a.id}"></div>
       </div>`).join('')}
       </div>
@@ -1548,6 +1565,16 @@ async function saveEditAddress(id){
 
 function deleteAddress(id,addr){if(confirm(`Delete address "${addr}..."?`))fetch(`/v4/wallet/addresses/${id}`,{method:'DELETE'}).then(()=>loadWallets());}
 
+async function toggleClaim(addressId,claimId){
+  if(claimId){
+    if(!confirm('Remove self-owned claim from this address?'))return;
+    await fetch(`/v4/wallet/claims/${claimId}`,{method:'DELETE'});
+  }else{
+    await fetch(`/v4/wallet/claims?address_id=${addressId}&claim_type=self_owned&confidence=verified`,{method:'POST'});
+  }
+  loadWallets();
+}
+
 let discoveredData=null;
 let discoverFilter='unclaimed';
 
@@ -1584,8 +1611,29 @@ function suggestChain(a){
 function renderDiscoveredAddresses(filter){
   if(!discoveredData)return;
   const results=document.getElementById('walletDiscoverResults');
+
+  // Transfer pairs view
+  if(filter==='pairs'){
+    const pairs=discoveredData.transfer_pairs||[];
+    if(!pairs.length){results.innerHTML='<div style="color:var(--text-secondary);padding:1rem">No transfer pairs with addresses found.</div>';return;}
+    results.innerHTML=pairs.map(p=>{
+      const shortWd=p.withdrawal_address?(p.withdrawal_address.length>30?p.withdrawal_address.substring(0,16)+'...'+p.withdrawal_address.slice(-8):p.withdrawal_address):'unknown';
+      const shortDep=p.deposit_address?(p.deposit_address.length>30?p.deposit_address.substring(0,16)+'...'+p.deposit_address.slice(-8):p.deposit_address):'unknown';
+      const taxColor=p.both_owned?'var(--green)':'var(--amber)';
+      const taxLabel=p.both_owned?'NON-TAXABLE self-transfer':'POTENTIALLY TAXABLE';
+      return`<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:6px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:6px"><span class="badge badge-blue">${p.asset}</span> ${p.tx_count} transfers · ${p.from_exchange} → ${p.to_exchange} <span class="badge" style="font-size:9px">${p.match_confidence}</span></div>
+        <div style="font-size:10px;color:var(--text-secondary);margin:4px 0">📤 <span style="font-family:'JetBrains Mono',monospace" title="${p.withdrawal_address||''}">${shortWd}</span> ${p.wd_claimed?'<span style="color:var(--green)">✅ owned</span>':'<span style="color:var(--text-dim)">❓</span>'}</div>
+        <div style="font-size:10px;color:var(--text-secondary);margin:4px 0">📥 <span style="font-family:'JetBrains Mono',monospace" title="${p.deposit_address||''}">${shortDep}</span> ${p.dep_claimed?'<span style="color:var(--green)">✅ owned</span>':'<span style="color:var(--text-dim)">❓</span>'}</div>
+        <div style="font-size:11px;font-weight:600;color:${taxColor};margin-top:6px">→ ${taxLabel}</div>
+      </div>`;
+    }).join('');
+    return;
+  }
+
   let addrs=discoveredData.addresses||[];
   if(filter==='unclaimed')addrs=addrs.filter(a=>a.status==='unclaimed');
+  else if(filter==='registered')addrs=addrs.filter(a=>a.status==='registered');
   else if(filter==='claimed')addrs=addrs.filter(a=>a.status==='claimed');
   if(!addrs.length){results.innerHTML='<div style="color:var(--text-secondary);padding:1rem">No addresses match this filter.</div>';return;}
   results.innerHTML=addrs.map((a,i)=>{
@@ -1599,6 +1647,14 @@ function renderDiscoveredAddresses(filter){
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">✅ ${assetBadges} <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)" title="${a.address}">${shortAddr}</span></div>
         <div style="font-size:10px;color:var(--text-secondary)">${exchanges}</div>
         <div style="font-size:10px;color:var(--green);margin-top:4px">Claimed: ${reg.claim_type||'?'} → ${reg.entity_label||'?'} / ${reg.account_label||'?'}</div>
+      </div>`;
+    }
+    if(a.status==='registered'){
+      const reg=a.registered_in||{};
+      return`<div style="background:var(--amber-bg);border:1px solid rgba(245,158,11,0.2);border-radius:8px;padding:10px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">⚠️ ${assetBadges} <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary)" title="${a.address}">${shortAddr}</span></div>
+        <div style="font-size:10px;color:var(--text-secondary)">${exchanges}</div>
+        <div style="font-size:10px;color:var(--amber);margin-top:4px">Registered: ${reg.entity_label||'?'} / ${reg.account_label||'?'} (no self-owned claim)</div>
       </div>`;
     }
     const chain=suggestChain(a);

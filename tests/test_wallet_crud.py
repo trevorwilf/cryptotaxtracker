@@ -456,3 +456,102 @@ class TestUIInlineEditNoPrompt:
 
     def test_suggest_chain_function(self):
         assert "function suggestChain" in self._html()
+
+
+# ═══ Part 3 Tests ═════════════════════════════════════════════════════════
+
+class TestListEntitiesClaimInfo:
+
+    def test_list_query_includes_claim_fields(self):
+        """The list entities SQL should join wallet_address_claims."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_list_entities)
+        assert "claim_id" in src
+        assert "claim_type" in src
+        assert "claim_confidence" in src
+        assert "claim_review_status" in src
+
+    def test_list_response_includes_claim_in_addresses(self):
+        """Address objects should include claim_id, claim_type fields."""
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_list_entities)
+        assert '"claim_id": row.get("claim_id")' in src
+
+
+class TestToggleClaim:
+
+    def test_ui_has_toggle_claim_function(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "function toggleClaim" in content
+
+    def test_ui_shows_claim_icons(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "Claimed: self-owned" in content
+        assert "Not claimed" in content
+
+
+class TestV4TransfersOwnership:
+
+    def test_transfers_endpoint_includes_ownership(self):
+        import main as m
+        import inspect
+        src = inspect.getsource(m.v4_transfers)
+        assert "wd_claim_type" in src
+        assert "dep_claim_type" in src
+        assert "both_owned" in src
+        assert "wd_entity_label" in src
+
+    def test_ui_transfers_has_tax_status(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "Tax Status" in content
+        assert "Non-Taxable" in content
+        assert "Review" in content
+
+
+class TestAutoDiscoverTransferPairs:
+
+    def test_auto_discover_includes_transfer_pairs(self):
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert "transfer_pairs" in src
+
+    def test_auto_discover_registered_status(self):
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert '"registered"' in src
+        assert "registered_no_claim_map" in src
+
+    def test_auto_discover_summary_has_registered(self):
+        import main as m
+        import inspect
+        src = inspect.getsource(m.wallet_auto_discover)
+        assert '"registered_no_claim"' in src
+
+    def test_ui_has_pairs_filter(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "filterDiscovered('pairs'" in content
+
+    def test_ui_has_registered_filter(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "filterDiscovered('registered'" in content
+
+    def test_ui_renders_transfer_pairs(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "NON-TAXABLE self-transfer" in content
+        assert "POTENTIALLY TAXABLE" in content

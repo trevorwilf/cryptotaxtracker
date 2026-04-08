@@ -1360,16 +1360,40 @@ async def v4_transfers(run_id: int = Query(None)):
             run_filter = "WHERE run_id = :run_id"
             params["run_id"] = resolved
         r = await session.execute(t(f"""
-            SELECT id, asset, quantity::text, source_wallet, dest_wallet,
-                   original_acquired_at, carryover_basis_usd::text,
-                   cost_per_unit_usd::text, transferred_at, tx_hash,
-                   transfer_fee::text, match_confidence
-            FROM tax.transfer_carryover
-            {run_filter}
-            ORDER BY transferred_at DESC
+            SELECT DISTINCT ON (tc.id)
+                tc.id, tc.asset, tc.quantity::text, tc.source_wallet, tc.dest_wallet,
+                tc.original_acquired_at, tc.carryover_basis_usd::text,
+                tc.cost_per_unit_usd::text, tc.transferred_at, tc.tx_hash,
+                tc.transfer_fee::text, tc.match_confidence,
+                w.address AS wd_address, d.address AS dep_address,
+                wd_claim.claim_type AS wd_claim_type,
+                wd_ent.entity_type AS wd_entity_type,
+                wd_ent.label AS wd_entity_label,
+                dep_claim.claim_type AS dep_claim_type,
+                dep_ent.entity_type AS dep_entity_type,
+                dep_ent.label AS dep_entity_label
+            FROM tax.transfer_carryover tc
+            LEFT JOIN tax.withdrawals w ON w.id = tc.withdrawal_id
+            LEFT JOIN tax.deposits d ON d.id = tc.deposit_id
+            LEFT JOIN tax.wallet_addresses wd_wa ON wd_wa.address = w.address
+            LEFT JOIN tax.wallet_address_claims wd_claim ON wd_claim.address_id = wd_wa.id
+                AND wd_claim.claim_type = 'self_owned'
+            LEFT JOIN tax.wallet_accounts wd_acct ON wd_wa.account_id = wd_acct.id
+            LEFT JOIN tax.wallet_entities wd_ent ON wd_acct.entity_id = wd_ent.id
+            LEFT JOIN tax.wallet_addresses dep_wa ON dep_wa.address = d.address
+            LEFT JOIN tax.wallet_address_claims dep_claim ON dep_claim.address_id = dep_wa.id
+                AND dep_claim.claim_type = 'self_owned'
+            LEFT JOIN tax.wallet_accounts dep_acct ON dep_wa.account_id = dep_acct.id
+            LEFT JOIN tax.wallet_entities dep_ent ON dep_acct.entity_id = dep_ent.id
+            {"WHERE tc.run_id = :run_id" if resolved else ""}
+            ORDER BY tc.id, tc.transferred_at DESC
             LIMIT 200
         """), params)
-        transfers = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+        raw = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+        # Re-sort by transferred_at DESC after DISTINCT ON
+        transfers = sorted(raw, key=lambda x: x.get("transferred_at") or "", reverse=True)
+        for t_row in transfers:
+            t_row["both_owned"] = bool(t_row.get("wd_claim_type")) and bool(t_row.get("dep_claim_type"))
     return {"count": len(transfers), "transfers": transfers}
 
 
@@ -1967,10 +1991,20 @@ async def wallet_list_entities():
                    a.id AS account_id, a.account_type, a.exchange_name,
                    a.label AS account_label, a.notes AS account_notes,
                    wa.id AS address_id, wa.address, wa.chain,
-                   wa.label AS address_label, wa.is_active
+                   wa.label AS address_label, wa.is_active,
+                   wac.id AS claim_id, wac.claim_type,
+                   wac.confidence AS claim_confidence,
+                   wac.review_status AS claim_review_status
             FROM tax.wallet_entities e
             LEFT JOIN tax.wallet_accounts a ON a.entity_id = e.id
             LEFT JOIN tax.wallet_addresses wa ON wa.account_id = a.id
+            LEFT JOIN LATERAL (
+                SELECT wac.id, wac.claim_type, wac.confidence, wac.review_status
+                FROM tax.wallet_address_claims wac
+                WHERE wac.address_id = wa.id
+                ORDER BY wac.claimed_at DESC
+                LIMIT 1
+            ) wac ON TRUE
             ORDER BY e.id, a.id, wa.id
         """))
         rows = [dict(zip(r.keys(), row)) for row in r.fetchall()]
@@ -1998,6 +2032,10 @@ async def wallet_list_entities():
                     "id": row["address_id"], "address": row["address"],
                     "chain": row["chain"], "label": row["address_label"],
                     "is_active": row.get("is_active", True),
+                    "claim_id": row.get("claim_id"),
+                    "claim_type": row.get("claim_type"),
+                    "claim_confidence": row.get("claim_confidence"),
+                    "claim_review_status": row.get("claim_review_status"),
                 })
 
     result = []
@@ -2229,6 +2267,47 @@ async def wallet_auto_discover():
         ent_rows = [dict(zip(ent_r.keys(), row)) for row in ent_r.fetchall()]
 
     # Group addresses
+    # 4. Registered but unclaimed addresses
+    async with db.get_session() as session:
+        from sqlalchemy import text as t
+        reg_r = await session.execute(t("""
+            SELECT wa.address, we.label AS entity_label, wacct.label AS account_label,
+                   wacct.id AS account_id
+            FROM tax.wallet_addresses wa
+            JOIN tax.wallet_accounts wacct ON wa.account_id = wacct.id
+            JOIN tax.wallet_entities we ON wacct.entity_id = we.id
+            WHERE wa.id NOT IN (
+                SELECT address_id FROM tax.wallet_address_claims
+                WHERE claim_type = 'self_owned'
+            )
+        """))
+        registered_no_claim_map = {}
+        for row in reg_r.fetchall():
+            rd = dict(zip(reg_r.keys(), row))
+            registered_no_claim_map[rd["address"]] = {
+                "entity_label": rd["entity_label"],
+                "account_label": rd["account_label"],
+                "account_id": rd["account_id"],
+            }
+
+        # 5. Transfer pairs
+        tp_r = await session.execute(t("""
+            SELECT tc.source_wallet AS from_exchange, tc.dest_wallet AS to_exchange,
+                   tc.asset, tc.match_confidence,
+                   w.address AS withdrawal_address, d.address AS deposit_address,
+                   COUNT(*) AS tx_count
+            FROM tax.transfer_carryover tc
+            LEFT JOIN tax.withdrawals w ON w.id = tc.withdrawal_id
+            LEFT JOIN tax.deposits d ON d.id = tc.deposit_id
+            WHERE w.address IS NOT NULL OR d.address IS NOT NULL
+            GROUP BY tc.source_wallet, tc.dest_wallet, tc.asset, tc.match_confidence,
+                     w.address, d.address
+            ORDER BY tx_count DESC
+            LIMIT 500
+        """))
+        transfer_pairs_raw = [dict(zip(tp_r.keys(), row)) for row in tp_r.fetchall()]
+
+    # Group addresses
     addr_groups: dict[str, dict] = {}
     for row in all_rows:
         addr = row["address"]
@@ -2252,11 +2331,19 @@ async def wallet_auto_discover():
     for addr, g in addr_groups.items():
         g["assets"] = sorted(g["assets"] - {""})
         g["networks"] = sorted(g["networks"])
-        g["status"] = "claimed" if addr in claimed_map else "unclaimed"
-        g["registered_in"] = claimed_map.get(addr)
+        if addr in claimed_map:
+            g["status"] = "claimed"
+            g["registered_in"] = claimed_map[addr]
+        elif addr in registered_no_claim_map:
+            g["status"] = "registered"
+            g["registered_in"] = registered_no_claim_map[addr]
+        else:
+            g["status"] = "unclaimed"
+            g["registered_in"] = None
         addresses.append(g)
 
-    addresses.sort(key=lambda a: (0 if a["status"] == "unclaimed" else 1, -a["total_tx_count"]))
+    addresses.sort(key=lambda a: ({"unclaimed": 0, "registered": 1, "claimed": 2}.get(a["status"], 3),
+                                   -a["total_tx_count"]))
 
     # Build entity list
     ent_map: dict[int, dict] = {}
@@ -2269,15 +2356,37 @@ async def wallet_auto_discover():
                 "id": row["account_id"], "label": row["account_label"],
                 "account_type": row["account_type"]})
 
+    # Build transfer pairs with claim info
+    transfer_pairs = []
+    for tp in transfer_pairs_raw:
+        wd_addr = tp.get("withdrawal_address")
+        dep_addr = tp.get("deposit_address")
+        transfer_pairs.append({
+            "withdrawal_address": wd_addr,
+            "deposit_address": dep_addr,
+            "from_exchange": tp["from_exchange"],
+            "to_exchange": tp["to_exchange"],
+            "asset": tp["asset"],
+            "tx_count": tp["tx_count"],
+            "match_confidence": tp["match_confidence"],
+            "wd_claimed": wd_addr in claimed_map,
+            "dep_claimed": dep_addr in claimed_map,
+            "both_owned": (wd_addr in claimed_map) and (dep_addr in claimed_map),
+        })
+
     claimed_count = sum(1 for a in addresses if a["status"] == "claimed")
+    registered_count = sum(1 for a in addresses if a["status"] == "registered")
     return {
         "summary": {
             "total_unique_addresses": len(addresses),
-            "already_registered": claimed_count,
-            "unclaimed": len(addresses) - claimed_count,
+            "already_registered": claimed_count + registered_count,
+            "claimed": claimed_count,
+            "registered_no_claim": registered_count,
+            "unclaimed": len(addresses) - claimed_count - registered_count,
         },
         "addresses": addresses,
         "entities": list(ent_map.values()),
+        "transfer_pairs": transfer_pairs,
     }
 
 
